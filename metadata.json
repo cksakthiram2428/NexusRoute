@@ -1,0 +1,6 @@
+{
+  "name": "NexusRoute LLM - Cost Optimization & Multi-Model Routing Engine",
+  "description": "Enterprise-grade intelligent LLM routing system with complexity classification, multi-part query splitting, cost vs quality benchmarking, and explainable decision transparent controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
