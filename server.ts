@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeComplexity, DEFAULT_ROUTING_POLICY } from './src/lib/classifier';
+import { analyzeRoutingWithONNX, initONNXClassifier } from './src/lib/onnx-classifier';
 import {
   calculateCost,
   DEFAULT_CLOUD_LITE_MODEL_ID,
@@ -31,7 +32,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
 // Initialize Gemini Client
 const apiKey = process.env.GEMINI_API_KEY || '';
@@ -48,7 +49,16 @@ const ai = apiKey
 
 // System in-memory store
 let currentPolicy: RoutingPolicyConfig = { ...DEFAULT_ROUTING_POLICY };
+let onnxInitialized = false;
 const traceHistory: ExecutionTrace[] = [];
+
+// Initialize ONNX classifier on startup (non-blocking)
+initONNXClassifier().then(success => {
+  onnxInitialized = success;
+  console.log(`ONNX Classifier: ${success ? '✅ Initialized' : '⚠️ Using heuristic fallback'}`);
+}).catch(err => {
+  console.warn('ONNX initialization failed, using heuristic classifier:', err.message);
+});
 
 // Realistic Local Model Simulator for $0 edge tasks (or Ollama fallback)
 async function executeLocalModel(prompt: string, modelId: string = DEFAULT_LOCAL_MODEL_ID): Promise<{ text: string; latencyMs: number; tokens: { input: number; output: number } }> {
@@ -255,16 +265,53 @@ app.get('/api/models/health', async (_req, res) => {
   }
 });
 
-// 2. Analyze Prompt & Routing Preview
-app.post('/api/route/analyze', (req, res) => {
+// 2a. Neural Classification via ONNX Model
+app.post('/api/classify', async (req, res) => {
   try {
-    const { prompt, policyOverride } = req.body;
+    const { prompt } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Valid prompt string is required.' });
+    }
+
+    const activePolicy = { ...currentPolicy };
+    const analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
+
+    res.json({
+      type: 'neural_classification',
+      onnxModel: 'nexusroute_router_int8.onnx',
+      initialized: onnxInitialized,
+      complexityScore: analysis.overallComplexity,
+      recommendedTier: analysis.recommendedModelTier,
+      recommendedModelId: analysis.recommendedModelId,
+      flags: analysis.detectedCategory === 'privacy_compliance' ? { hasPII: true } : analysis.subTasks.length > 0 ? { isMultiPart: true } : {},
+      subTasks: analysis.subTasks,
+      routingRationale: analysis.routingRationale,
+      confidenceScore: analysis.confidenceScore,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Classification failed' });
+  }
+});
+
+// 2. Analyze Prompt & Routing Preview
+app.post('/api/route/analyze', async (req, res) => {
+  try {
+    const { prompt, policyOverride, useNeural = true } = req.body;
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'Valid prompt string is required.' });
     }
 
     const activePolicy = policyOverride ? { ...currentPolicy, ...policyOverride } : currentPolicy;
-    const analysis = analyzeComplexity(prompt, activePolicy);
+
+    // Use ONNX neural classifier when available and requested
+    let analysis;
+    if (useNeural && onnxInitialized) {
+      analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
+      analysis.classifier = 'onnx-neural';
+    } else {
+      analysis = analyzeComplexity(prompt, activePolicy);
+      analysis.classifier = 'heuristic';
+    }
 
     res.json(analysis);
   } catch (error: any) {
@@ -275,13 +322,22 @@ app.post('/api/route/analyze', (req, res) => {
 // 3. Execute Routed Request (Single or Multi-part decomposed)
 app.post('/api/route/execute', async (req, res) => {
   try {
-    const { prompt, manualOverrideModelId, policyOverride } = req.body;
+    const { prompt, manualOverrideModelId, policyOverride, useNeural = true } = req.body;
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'Valid prompt string is required.' });
     }
 
     const activePolicy = policyOverride ? { ...currentPolicy, ...policyOverride } : currentPolicy;
-    const analysis = analyzeComplexity(prompt, activePolicy);
+
+    // Use ONNX neural classifier when available and requested
+    let analysis;
+    if (useNeural && onnxInitialized) {
+      analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
+      analysis.classifier = 'onnx-neural';
+    } else {
+      analysis = analyzeComplexity(prompt, activePolicy);
+      analysis.classifier = 'heuristic';
+    }
 
     const isOverridden = Boolean(manualOverrideModelId && manualOverrideModelId !== analysis.recommendedModelId);
     const targetModelId = manualOverrideModelId || analysis.recommendedModelId;
