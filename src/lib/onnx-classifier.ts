@@ -8,7 +8,7 @@
  * 3. Flag Detection (PII, Code, Math, Multi-part)
  */
 
-import { estimateTokenCount, FLAGSHIP_MODEL_ID, DEFAULT_LOCAL_MODEL_ID, DEFAULT_CLOUD_LITE_MODEL_ID } from './pricing';
+import { estimateTokenCount, FLAGSHIP_MODEL_ID, DEFAULT_LOCAL_MODEL_ID, DEFAULT_CLOUD_LITE_MODEL_ID, SUPPORTED_MODELS, calculateCost as pricingCalculateCost } from './pricing';
 import type { ModelTier, RoutingAnalysis, RoutingPolicyConfig, SubTask, TaskCategory } from '../types/router';
 
 // ONNX Runtime Node.js
@@ -314,12 +314,7 @@ export async function analyzeRoutingWithONNX(
  * Cost calculation helper
  */
 function calculateCost(modelId: string, inputTokens: number, outputTokens: number): number {
-  const { SUPPORTED_MODELS } = require('./pricing');
-  const model = SUPPORTED_MODELS.find((m: any) => m.id === modelId);
-  if (!model) return 0;
-  const inCost = (inputTokens / 1_000_000) * model.inputCostPer1M;
-  const outCost = (outputTokens / 1_000_000) * model.outputCostPer1M;
-  return Number((inCost + outCost).toFixed(7));
+  return pricingCalculateCost(modelId, inputTokens, outputTokens);
 }
 
 /**
