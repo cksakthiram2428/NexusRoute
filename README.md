@@ -1,68 +1,79 @@
-# 🚀 NexusRoute: Neural LLM Cost Optimizer & Router
+# 🚀 <samp>NexusRoute</samp>: <sub style="color:#38bdf8;">Neural LLM FinOps Infrastructure</sub>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/ONNX-Powered-blue?style=for-the-badge&logo=onnx" />
-  <img src="https://img.shields.io/badge/Build-Passing-success?style=flat-square&logo=github" />
-  <img src="https://img.shields.io/badge/Gemini%20API-SDK%20v2.4-orange?style=flat-square&logo=google" />
-  <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=flat-square" />
-</p>
-
-NexusRoute is an enterprise-grade AI infrastructure platform that reduces LLM operational costs by up to **80%** using **real-time neural routing**.
+<div align="center">
+  <!-- Animated Hero Banner Placeholder -->
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tandpfun/skill-icons/main/icons/react-dark.svg" width="60" />
+    <img src="https://raw.githubusercontent.com/tandpfun/skill-icons/main/icons/react-light.svg" width="60" alt="Hero Animation" />
+  </picture>
+  <br/>
+  <i>Real-time neural routing logic, distilled into a 64MB CPU-executable agent.</i>
+</div>
 
 ---
 
-### 🧠 The Intelligence Pipeline (Real-Time)
-*This diagram renders dynamically in GitHub.*
+### 🧠 <samp>Neural Intelligence Core</samp>
 
 ```mermaid
 graph LR
-    A[User Prompt] --> B{NexusRoute Gateway}
-    B --> C[ONNX Router: DistilBERT INT8]
-    C --> D[Head 1: Complexity Score]
-    C --> E[Head 2: Model Tier]
-    C --> F[Head 3: Policy Flags]
-    D & E & F --> G[Dispatch: Edge/Lite/Flagship]
-    G --> H[Final Output]
+    A[User Prompt] -->|Semantic Ingestion| B{Neural Gateway}
+    B --> C[ONNX DistilBERT-INT8]
+    C -->|Regression| D[Complexity Score]
+    C -->|Logits| E[Model Tier Selection]
+    C -->|Sigmoid| F[Constraint Policy Flags]
+    D & E & F -->|Zero-Latency Dispatch| G[Model Execution]
+    G --> H[Final Response]
 ```
 
 ---
 
-### ✨ Core Neural Capabilities
+### ✨ <samp>System Capabilities</samp>
 
-| Feature | Description | Target Model Tier | Cost Efficiency |
+<div align="center">
+  
+| Feature | Visual Signal | Tier | Cost Efficiency |
 | :--- | :--- | :--- | :--- |
-| **Neural Routing** | Uses a quantized DistilBERT INT8 model to classify prompt intent and complexity in <30ms. | Edge to Pro | 🚀 80% Reduction |
-| **Multi-Part Decomposer** | Splits complex compound prompts into distinct sub-tasks for parallel execution. | Hybrid Multi-Model | 🔒 Zero-Egress Compliant |
-| **A/B Model Arena** | Real-time benchmarking comparing correctness, reasoning depth, and token ROI. | Gemini 2.5 Pro vs GPT-4o | ⚖️ Pareto Frontier |
-| **PII/Zero-Egress** | Automatically traps sensitive PII, SSN, or confidential queries for on-device local execution. | Local Edge Engine ($0) | 🛡️ 100% Sovereignty |
+| **Neural Router** | ⚡ Context-Aware | Edge-Pro | 🚀 80% Reduction |
+| **Decomposer** | 🧩 Parallel Engine | Hybrid | 🔒 Secure |
+| **A/B Arena** | ⚖️ Benchmark ROI | Cloud | 💡 Pareto Opt |
+| **Privacy Guard** | 🛡️ Zero-Egress | Edge | 🎯 100% Sovereign |
+
+</div>
 
 ---
 
-### 🛠️ Why ONNX?
-We moved from fragile heuristic regex matching to a **64MB quantized Neural Router** that executes on the CPU:
-- **Zero GPU Dependency**: Runs within your existing Node.js process.
-- **Latency**: Adds negligible overhead (<30ms) to the query lifecycle.
-- **Accuracy**: Understands context and semantic intent, not just keywords.
+### 📸 <samp>System Interface Overview</samp>
+
+*Visualizing the operational state of the NexusRoute platform.*
+
+| **Console & Routing** | **Analytics & FinOps** |
+| :--- | :--- |
+| ![Live Console Mockup](assets/console-preview.png) | ![Analytics Dashboard](assets/analytics-preview.png) |
+| *Real-time complexity tracing* | *Cost reduction telemetry* |
 
 ---
 
-### 📦 Quickstart & Development
+### 🛠️ <samp>Why ONNX Intelligence?</samp>
+
+We engineered NexusRoute to move beyond brittle heuristic keyword matching:
+
+- 🏎️ **< 30ms Inference**: CPU-native execution, zero GPU requirement.
+- 📉 **64MB Footprint**: Quantized for enterprise-grade edge deployment.
+- 🎯 **Contextual Intent**: Understands code logic vs. math vs. PII sensitivity.
+
+---
+
+### 🚀 <samp>Getting Started</samp>
 
 ```bash
-# Clone
 git clone https://github.com/cksakthiram2428/NexusRoute.git
 cd NexusRoute
-
-# Install dependencies
 npm install
-
-# Run development server
 npm run dev
-
-# Build for production
-npm run build
 ```
 
 ---
 
-*Built with precision for enterprise AI infrastructure and cost optimization.*
+<div align="center">
+  <sub>Built with precision for enterprise AI infrastructure and cost optimization.</sub>
+</div>
