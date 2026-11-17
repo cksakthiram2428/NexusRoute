@@ -26,8 +26,8 @@ const MODEL_PATH = process.env.ONNX_MODEL_PATH ||
 
 // ONNX model outputs
 interface ONNXResults {
-  complexity_score: number;
-  tier: 'local' | 'cloud_lite' | 'cloud_flagship';
+  complexityScore: number;
+  tier: ModelTier;
   flags: {
     has_pii: boolean;
     requires_code_exec: boolean;
@@ -35,6 +35,14 @@ interface ONNXResults {
     is_multipart: boolean;
   };
 }
+
+interface ONNXRawOutputs {
+  complexity_score: { data: (number | string | bigint | undefined)[] };
+  tier_logits: { data: (number | string | bigint | undefined)[] };
+  flag_logits: { data: (number | string | bigint | undefined)[] };
+}
+
+const toNum = (v: number | string | bigint | undefined): number => Number(v ?? 0);
 
 /**
  * Initialize the ONNX runtime and load the model
@@ -77,7 +85,7 @@ async function tokenize(text: string): Promise<number[]> {
     .split(/\s+/)
     .filter(Boolean);
 
-  const tokens: number[] = [];
+  const tokenSeed: number[] = [];
   let tokenId = 1000; // Start from arbitrary base
 
   for (const word of words) {
@@ -87,7 +95,7 @@ async function tokenize(text: string): Promise<number[]> {
       hash = ((hash << 5) - hash + word.charCodeAt(i)) & 0xffffffff;
     }
     tokenId = 101 + (Math.abs(hash) % 30522); // BERT vocab size approx
-    tokens.push(tokenId);
+    tokenSeed.push(tokenId);
   }
 
   // Add special tokens
@@ -95,6 +103,7 @@ async function tokenize(text: string): Promise<number[]> {
   const SEP_TOKEN = 102;
 
   // Truncate or pad to maxLen
+  let tokens = tokenSeed;
   if (tokens.length >= maxLen - 2) {
     tokens = tokens.slice(0, maxLen - 2);
   }
@@ -113,11 +122,13 @@ export async function classifyWithONNX(
 ): Promise<ONNXResults> {
   if (!session) {
     const initialized = await initONNXClassifier();
-    if (!initialized) {
+    if (!initialized || !session) {
       // Fallback to heuristic
       return heuristicFallback(prompt, policy);
     }
   }
+
+  const activeSession = session;
 
   try {
     const inputIds = await tokenize(prompt);
@@ -143,20 +154,20 @@ export async function classifyWithONNX(
     feeds['input_ids'] = inputTensor;
     feeds['attention_mask'] = maskTensor;
 
-    const results = await session.run(feeds);
+    const results = (await activeSession.run(feeds)) as unknown as ONNXRawOutputs;
 
     // Extract results
-    const complexityScoreRaw = results.complexity_score?.data?.[0] ?? 50;
+    const complexityScoreRaw = toNum(results.complexity_score?.data?.[0] ?? 50);
     const complexityScore = Math.max(5, Math.min(98, Math.round(complexityScoreRaw)));
 
     // Tier classification
-    const tierLogits = results.tier_logits?.data ?? [0, 0, 0];
+    const tierLogits = (results.tier_logits?.data ?? [0, 0, 0]).map(toNum);
     const tierIndex = tierLogits.indexOf(Math.max(...tierLogits));
     const tierMap: ModelTier[] = ['local', 'cloud_lite', 'cloud_flagship'];
-    const tier = tierMap[tierIndex] as ModelTier;
+    const tier = tierMap[tierIndex] ?? 'cloud_flagship';
 
     // Flags with sigmoid activation
-    const flagLogits = results.flag_logits?.data ?? [0, 0, 0, 0];
+    const flagLogits = (results.flag_logits?.data ?? [0, 0, 0, 0]).map(toNum);
     const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
     const flagProbs = flagLogits.map(sigmoid);
 
@@ -289,7 +300,7 @@ export async function analyzeRoutingWithONNX(
   if (onnxResult.flags.requires_symbolic_math) detectedCategory = 'mathematical_reasoning';
   else if (onnxResult.flags.requires_code_exec) detectedCategory = 'code_generation';
   else if (onnxResult.flags.is_multipart) detectedCategory = 'multi_part_composite';
-  else if (onnxResult.flags.has_pii) detectedCategory = 'privacy_compliance';
+  else if (onnxResult.flags.has_pii) detectedCategory = 'complex_synthesis';
 
   return {
     overallComplexity: onnxResult.complexityScore,

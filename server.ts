@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import compression from 'compression';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeComplexity, applyRoutingRules, DEFAULT_ROUTING_POLICY } from './src/lib/classifier';
 import {
@@ -20,6 +21,7 @@ import {
   analysisCache,
   getLoadStatus,
 } from './src/lib/loadManager';
+import { loadOrSeedRoutingRules, saveRuleToDb, deleteRuleFromDb } from './src/lib/rulesStore';
 import { analyzeRoutingWithONNX, initONNXClassifier } from './src/lib/onnx-classifier';
 import {
   calculateCost,
@@ -61,6 +63,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// gzip/deflate every response
+app.use(compression());
+
 // In-memory fixed-window rate limiting (per IP, per window)
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -92,16 +97,26 @@ const authLimiter = createRateLimiter({
   message: 'Too many authentication attempts. Try again in 15 minutes.',
 });
 
-// Security headers (Vite dev requires inline scripts; CSP is permissive until production hardening)
+// Security headers — permissive in dev (Vite needs inline scripts/eval), strict in production
+const isProduction = process.env.NODE_ENV === 'production';
 app.use((_req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
-  res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.set('Permissions-Policy', 'camera=(), microphone=()');
-  res.set(
-    'Content-Security-Policy',
-    "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http: ws: wss:; connect-src 'self' https: http: ws: wss:; img-src 'self' data: https: http:"
-  );
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (isProduction) {
+    res.set('X-Frame-Options', 'DENY');
+    res.set(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  } else {
+    res.set('X-Frame-Options', 'SAMEORIGIN');
+    res.set(
+      'Content-Security-Policy',
+      "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http: ws: wss:; connect-src 'self' https: http: ws: wss:; img-src 'self' data: https: http:"
+    );
+  }
   next();
 });
 
@@ -139,8 +154,8 @@ let currentPolicy: RoutingPolicyConfig = { ...DEFAULT_ROUTING_POLICY };
 let onnxInitialized = false;
 const traceHistory: ExecutionTrace[] = [];
 
-// Governance rules engine store (admin-managed routing rules)
-let routingRules: RoutingRule[] = [
+// Governance rules engine store (admin-managed routing rules; mirrored to SQLite)
+const DEFAULT_ROUTING_RULES: RoutingRule[] = [
   {
     id: 'rule-pii-local-confinement',
     name: 'PII Strict Local Confinement',
@@ -223,6 +238,9 @@ let routingRules: RoutingRule[] = [
     createdBy: 'ops-admin',
   },
 ];
+
+let routingRules: RoutingRule[] = loadOrSeedRoutingRules(DEFAULT_ROUTING_RULES);
+
 
 // Seed the audit ledger with a realistic 14-day execution history so the
 // transparency dashboard and statistics endpoints carry real trace data.
@@ -321,7 +339,7 @@ async function executeLocalModel(prompt: string, modelId: string = DEFAULT_LOCAL
   if (currentPolicy.customOllamaUrl) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1200);
+      const timeoutId = setTimeout(() => controller.abort(), 400);
       const res = await fetch(`${currentPolicy.customOllamaUrl}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -569,7 +587,7 @@ app.post('/api/classify', requireAuth, async (req, res) => {
 });
 
 // 2. Analyze Prompt & Routing Preview
-app.post('/api/route/analyze', async (req, res) => {
+app.post('/api/route/analyze', requireAuth, async (req, res) => {
   try {
     const { prompt, policyOverride, useNeural = true } = req.body;
     const cleanPrompt = asValidString(prompt, MAX_PROMPT_LENGTH);
@@ -1117,7 +1135,7 @@ app.get('/api/stats/summary', requireAuth, (_req, res) => {
   const baselineCost = traceHistory.reduce((a, b) => a + b.baselineCost, 0);
   const actualCost = traceHistory.reduce((a, b) => a + b.totalCost, 0);
   const totalCostSaved = Math.max(0, baselineCost - actualCost);
-  const overallCostReductionPercent = baselineCost > 0 ? Number(((totalCostSaved / baselineCost) * 100).toFixed(1)) : 68.4;
+  const overallCostReductionPercent = baselineCost > 0 ? Number(((totalCostSaved / baselineCost) * 100).toFixed(1)) : 0;
 
   const tierCounts = {
     local: 0,
@@ -1133,22 +1151,20 @@ app.get('/api/stats/summary', requireAuth, (_req, res) => {
     }
   });
 
-  // Seed with realistic default distribution if fresh session
-  if (totalRequests === 0) {
-    tierCounts.local = 142;
-    tierCounts.cloud_lite = 89;
-    tierCounts.cloud_standard = 45;
-    tierCounts.cloud_flagship = 24;
-  }
+  const averageLatencyMs =
+    totalRequests > 0
+      ? Math.round(traceHistory.reduce((acc, t) => acc + t.totalLatencyMs, 0) / totalRequests)
+      : 0;
 
   const metrics: SystemMetrics = {
-    totalRequests: totalRequests || 300,
-    totalCostSavedUsd: totalRequests ? Number(totalCostSaved.toFixed(4)) : 28.452,
-    baselineCostUsd: totalRequests ? Number(baselineCost.toFixed(4)) : 41.596,
-    actualCostUsd: totalRequests ? Number(actualCost.toFixed(4)) : 13.144,
+    totalRequests,
+    totalCostSavedUsd: totalRequests ? Number(totalCostSaved.toFixed(4)) : 0,
+    baselineCostUsd: totalRequests ? Number(baselineCost.toFixed(4)) : 0,
+    actualCostUsd: totalRequests ? Number(actualCost.toFixed(4)) : 0,
     overallCostReductionPercent,
-    averageLatencyMs: 312,
-    averageQualityRetention: 98.6,
+    averageLatencyMs,
+    // Quality retention cannot be computed from traces alone without benchmark ground truth
+    averageQualityRetention: null,
     tierDistribution: tierCounts,
     recentTraces: traceHistory.slice(0, 15),
   };
@@ -1283,6 +1299,7 @@ app.post('/api/config/rules', requireAuth, (req, res) => {
       createdBy: 'ops-admin',
     };
     routingRules.push(rule);
+    saveRuleToDb(rule);
     res.status(201).json({ success: true, rule });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create rule' });
@@ -1323,6 +1340,7 @@ app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
       rule.actions = cleanActions;
     }
     rule.updatedAt = new Date().toISOString();
+    saveRuleToDb(rule);
     res.json({ success: true, rule });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update rule' });
@@ -1332,6 +1350,7 @@ app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
 app.delete('/api/config/rules/:id', requireAuth, (req, res) => {
   const before = routingRules.length;
   routingRules = routingRules.filter((r) => r.id !== req.params.id);
+  deleteRuleFromDb(req.params.id);
   if (routingRules.length === before) {
     return res.status(404).json({ error: 'Routing rule not found.' });
   }
@@ -1682,7 +1701,18 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(
+      express.static(path.join(__dirname, 'dist'), {
+        maxAge: '1y',
+        immutable: true,
+        setHeaders: (res, filePath) => {
+          if (/\.html$/.test(filePath)) {
+            // HTML shells must revalidate so deploys propagate
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });

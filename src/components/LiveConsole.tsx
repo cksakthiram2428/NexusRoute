@@ -214,7 +214,7 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({
       try {
         const res = await fetch('/api/route/analyze', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ prompt, policyOverride: policy }),
         });
         if (res.ok) {

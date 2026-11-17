@@ -247,7 +247,7 @@ export interface SystemMetrics {
   actualCostUsd: number;
   overallCostReductionPercent: number;
   averageLatencyMs: number;
-  averageQualityRetention: number;
+  averageQualityRetention: number | null;
   tierDistribution: {
     local: number;
     cloud_lite: number;

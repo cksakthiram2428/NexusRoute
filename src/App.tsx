@@ -181,7 +181,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         policy={policy}
-        totalSavedUsd={metrics?.totalCostSavedUsd || 28.452}
+        totalSavedUsd={metrics?.totalCostSavedUsd ?? 0}
         currentUser={currentUser}
       />
 

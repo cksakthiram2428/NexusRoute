@@ -242,11 +242,11 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
-    const totalSaved = metrics?.totalCostSavedUsd || 28.4520;
+    const totalSaved = metrics?.totalCostSavedUsd ?? 0;
     const baseline = metrics?.baselineCostUsd || 41.5960;
     const actual = metrics?.actualCostUsd || 13.1440;
-    const reductionRate = metrics?.overallCostReductionPercent || 68.4;
-    const totalReqs = metrics?.totalRequests || 300;
+    const reductionRate = metrics?.overallCostReductionPercent ?? 0;
+    const totalReqs = metrics?.totalRequests ?? 0;
 
     doc.text(`• Cumulative Cost Saved: $${totalSaved.toFixed(4)} USD`, 16, 50);
     doc.text(`• Monolithic Baseline Spend: $${baseline.toFixed(4)} USD`, 16, 56);
@@ -261,10 +261,10 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
-    const localCalls = metrics?.tierDistribution.local || 142;
-    const liteCalls = metrics?.tierDistribution.cloud_lite || 89;
-    const stdCalls = metrics?.tierDistribution.cloud_standard || 45;
-    const flagCalls = metrics?.tierDistribution.cloud_flagship || 24;
+    const localCalls = metrics?.tierDistribution.local ?? 0;
+    const liteCalls = metrics?.tierDistribution.cloud_lite ?? 0;
+    const stdCalls = metrics?.tierDistribution.cloud_standard ?? 0;
+    const flagCalls = metrics?.tierDistribution.cloud_flagship ?? 0;
 
     doc.text(`• Local Edge ($0.00): ${localCalls} calls (Deterministic Parsing)`, 16, 96);
     doc.text(`• Cloud Lite ($0.075): ${liteCalls} calls (Summaries & QA)`, 16, 102);
@@ -367,11 +367,11 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-bold font-mono text-emerald-700 dark:text-emerald-400 tabular-nums">
-            ${metrics?.totalCostSavedUsd.toFixed(4) || '28.4520'}
+            {formatUsd(metrics?.totalCostSavedUsd ?? 0)}
           </div>
           <div className="text-[11px] text-[#59627E] dark:text-slate-400 font-mono">
-            Baseline: ${metrics?.baselineCostUsd.toFixed(4) || '41.5960'} → Actual: $
-            {metrics?.actualCostUsd.toFixed(4) || '13.1440'}
+            Baseline: {formatUsd(metrics?.baselineCostUsd ?? 0)} → Actual: $
+            {formatUsd(metrics?.actualCostUsd ?? 0)}
           </div>
         </div>
 
@@ -383,10 +383,10 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-bold font-mono text-[#020C21] dark:text-slate-100 tabular-nums">
-            {metrics?.overallCostReductionPercent || 68.4}%
+            {metrics?.overallCostReductionPercent ?? 0}%
           </div>
           <div className="text-[11px] text-[#59627E] dark:text-slate-400 font-mono">
-            Quality retention measured at {metrics?.averageQualityRetention || 98.6}%
+            Quality retention measured at {metrics?.averageQualityRetention != null ? `${metrics.averageQualityRetention}%` : 'Not measured'}
           </div>
         </div>
 
@@ -398,7 +398,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-bold font-mono text-sky-700 dark:text-sky-400 tabular-nums">
-            {metrics?.averageLatencyMs || 312}ms
+            {metrics?.averageLatencyMs ?? 0}ms
           </div>
           <div className="text-[11px] text-[#59627E] dark:text-slate-400 font-mono">
             ~3.2x faster than always-flagship
@@ -413,7 +413,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-bold font-mono text-[#020C21] dark:text-slate-100 tabular-nums">
-            {metrics?.totalRequests || 300}
+            {metrics?.totalRequests ?? 0}
           </div>
           <div className="text-[11px] text-[#59627E] dark:text-slate-400 font-mono">
             Zero routing failures / 100% cascade uptime
@@ -657,7 +657,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <div className="flex justify-between text-xs font-mono">
               <span className="text-emerald-800 dark:text-emerald-300 font-semibold">Local / Edge ($0)</span>
               <span className="text-emerald-900 dark:text-emerald-200 font-bold">
-                {metrics?.tierDistribution.local || 142} calls
+                {metrics?.tierDistribution.local ?? 0} calls
               </span>
             </div>
             <div className="text-xs text-emerald-700/80 dark:text-emerald-400/80 font-mono">
@@ -669,7 +669,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <div className="flex justify-between text-xs font-mono">
               <span className="text-sky-800 dark:text-sky-300 font-semibold">Cloud Lite ($0.075)</span>
               <span className="text-sky-900 dark:text-sky-200 font-bold">
-                {metrics?.tierDistribution.cloud_lite || 89} calls
+                {metrics?.tierDistribution.cloud_lite ?? 0} calls
               </span>
             </div>
             <div className="text-xs text-sky-700/80 dark:text-sky-400/80 font-mono">
@@ -681,7 +681,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <div className="flex justify-between text-xs font-mono">
               <span className="text-indigo-800 dark:text-indigo-300 font-semibold">Cloud Standard ($0.15)</span>
               <span className="text-indigo-900 dark:text-indigo-200 font-bold">
-                {metrics?.tierDistribution.cloud_standard || 45} calls
+                {metrics?.tierDistribution.cloud_standard ?? 0} calls
               </span>
             </div>
             <div className="text-xs text-indigo-700/80 dark:text-indigo-400/80 font-mono">
@@ -693,7 +693,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <div className="flex justify-between text-xs font-mono">
               <span className="text-amber-800 dark:text-amber-300 font-semibold">Flagship ($1.25)</span>
               <span className="text-amber-900 dark:text-amber-200 font-bold">
-                {metrics?.tierDistribution.cloud_flagship || 24} calls
+                {metrics?.tierDistribution.cloud_flagship ?? 0} calls
               </span>
             </div>
             <div className="text-xs text-amber-700/80 dark:text-amber-400/80 font-mono">
