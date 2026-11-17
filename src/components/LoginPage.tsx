@@ -46,7 +46,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 }) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('lead.engineer@acme-enterprise.io');
-  const [password, setPassword] = useState('demo1234');
+  const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [org, setOrg] = useState('Acme Global Enterprises');
   const [role, setRole] = useState('Staff ML Infrastructure Architect');
@@ -85,14 +85,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setAuthError(null);
     setIsLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'alex.vance@cloud-vertex.ai', password: 'demo1234' }),
-      });
+      // Server-side demo login — the demo credentials never reach the client
+      const res = await fetch('/api/auth/demo-sso', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setAuthError(data.error || 'SSO sign-in failed.');
+        setAuthError(data.error || 'Demo SSO sign-in failed.');
         return;
       }
       onLogin(data.user, data.token);
@@ -375,13 +372,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>{authError}</span>
             </div>
-          )}
-
-          {!isSignUp && (
-            <p className="text-[10px] text-center text-[#59627E] dark:text-slate-400 font-mono">
-              Demo account: <code className="text-[#020C21] dark:text-slate-200">lead.engineer@acme-enterprise.io</code> / password{' '}
-              <code className="text-[#020C21] dark:text-slate-200">demo1234</code>
-            </p>
           )}
 
           <button

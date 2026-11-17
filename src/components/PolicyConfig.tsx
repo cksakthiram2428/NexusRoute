@@ -17,6 +17,7 @@ import { RoutingPolicyConfig } from '../types/router';
 import { DEFAULT_ROUTING_POLICY } from '../lib/classifier';
 import { ActiveTab } from './Header';
 import { TopPanelBar, BottomNextStep } from './PanelNavigation';
+import { authHeaders } from '../lib/authHeader';
 
 interface PolicyConfigProps {
   policy: RoutingPolicyConfig;
@@ -54,7 +55,7 @@ export const PolicyConfig: React.FC<PolicyConfigProps> = ({
     try {
       const res = await fetch('/api/config/routing-policy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(localPolicy),
       });
       if (res.ok) {

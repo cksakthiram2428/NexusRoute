@@ -24,6 +24,18 @@ import {
 } from './src/lib/pricing';
 import { BENCHMARK_DATASET } from './src/lib/benchmarkDataset';
 import {
+  asValidString,
+  asNumberInRange,
+  asEnum,
+  sanitizePolicyOverride,
+  sanitizeChatMessages,
+  sanitizeRuleConditions,
+  sanitizeRuleActions,
+  isKnownModelId,
+  MAX_PROMPT_LENGTH,
+  MAX_GROUND_TRUTH_LENGTH,
+} from './src/lib/validation';
+import {
   BenchmarkResult,
   BenchmarkSuiteSummary,
   ExecutionTrace,
@@ -39,7 +51,64 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
+
+// In-memory fixed-window rate limiting (per IP, per window)
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function createRateLimiter({ windowMs, max, message }: { windowMs: number; max: number; message?: string }) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const bucket = rateLimitBuckets.get(key);
+    if (!bucket || now > bucket.resetAt) {
+      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    bucket.count += 1;
+    if (bucket.count > max) {
+      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ error: message || 'Too many requests. Please try again later.' });
+    }
+    next();
+  };
+}
+
+// Broad API limiter: 600 requests per IP per 15 minutes
+const apiLimiter = createRateLimiter({ windowMs: 15 * 60_000, max: 600 });
+// Strict auth limiter: 5 attempts per IP per 15 minutes
+const authLimiter = createRateLimiter({
+  windowMs: 15 * 60_000,
+  max: 5,
+  message: 'Too many authentication attempts. Try again in 15 minutes.',
+});
+
+// Security headers (Vite dev requires inline scripts; CSP is permissive until production hardening)
+app.use((_req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.set('Permissions-Policy', 'camera=(), microphone=()');
+  res.set(
+    'Content-Security-Policy',
+    "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http: ws: wss:; connect-src 'self' https: http: ws: wss:; img-src 'self' data: https: http:"
+  );
+  next();
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/signup', authLimiter);
+app.use('/api/auth/demo-sso', authLimiter);
+
+// Sweep expired buckets every 5 minutes to bound memory
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateLimitBuckets) {
+    if (now > bucket.resetAt) rateLimitBuckets.delete(key);
+  }
+}, 5 * 60_000).unref();
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
@@ -437,12 +506,15 @@ app.get('/api/models/health', async (_req, res) => {
 app.post('/api/classify', async (req, res) => {
   try {
     const { prompt } = req.body;
-    if (!prompt || typeof prompt !== 'string') {
-      return res.status(400).json({ error: 'Valid prompt string is required.' });
+    const cleanPrompt = asValidString(prompt, MAX_PROMPT_LENGTH);
+    if (!cleanPrompt) {
+      return res.status(400).json({
+        error: `Valid prompt string is required (1-${MAX_PROMPT_LENGTH} characters).`,
+      });
     }
 
     const activePolicy = { ...currentPolicy };
-    const analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
+    const analysis = await analyzeRoutingWithONNX(cleanPrompt, activePolicy);
 
     res.json({
       type: 'neural_classification',
@@ -469,24 +541,35 @@ app.post('/api/classify', async (req, res) => {
 app.post('/api/route/analyze', async (req, res) => {
   try {
     const { prompt, policyOverride, useNeural = true } = req.body;
-    if (!prompt || typeof prompt !== 'string') {
-      return res.status(400).json({ error: 'Valid prompt string is required.' });
+    const cleanPrompt = asValidString(prompt, MAX_PROMPT_LENGTH);
+    if (!cleanPrompt) {
+      return res.status(400).json({
+        error: `Valid prompt string is required (1-${MAX_PROMPT_LENGTH} characters).`,
+      });
     }
 
-    const activePolicy = policyOverride ? { ...currentPolicy, ...policyOverride } : currentPolicy;
+    const sanitizedOverride = sanitizePolicyOverride(policyOverride);
+    if (sanitizedOverride === null) {
+      return res.status(400).json({ error: 'Invalid policyOverride payload.' });
+    }
+    const useNeuralFlag = useNeural !== false;
+
+    const activePolicy = sanitizedOverride
+      ? { ...currentPolicy, ...sanitizedOverride }
+      : currentPolicy;
 
     // Use ONNX neural classifier when available and requested
     let analysis;
-    if (useNeural && onnxInitialized) {
-      analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
+    if (useNeuralFlag && onnxInitialized) {
+      analysis = await analyzeRoutingWithONNX(cleanPrompt, activePolicy);
       analysis.classifier = 'onnx-neural';
     } else {
-      analysis = analyzeComplexity(prompt, activePolicy);
+      analysis = analyzeComplexity(cleanPrompt, activePolicy);
       analysis.classifier = 'heuristic';
     }
 
     // Governance rules engine pass (admin-managed dispatch policies)
-    const evaluation = applyRoutingRules(analysis, prompt, routingRules, activePolicy);
+    const evaluation = applyRoutingRules(analysis, cleanPrompt, routingRules, activePolicy);
     if (evaluation.blocked) {
       return res.status(403).json({
         error: 'Request blocked by routing governance rule',
@@ -509,16 +592,30 @@ app.post('/api/route/analyze', async (req, res) => {
 // 3. Execute Routed Request (Single or Multi-part decomposed)
 app.post('/api/route/execute', async (req, res) => {
   try {
-    const { prompt, manualOverrideModelId, policyOverride, useNeural = true } = req.body;
-    if (!prompt || typeof prompt !== 'string') {
-      return res.status(400).json({ error: 'Valid prompt string is required.' });
+    const { manualOverrideModelId, policyOverride, useNeural = true } = req.body;
+    const prompt = asValidString(req.body.prompt, MAX_PROMPT_LENGTH);
+    if (!prompt) {
+      return res.status(400).json({
+        error: `Valid prompt string is required (1-${MAX_PROMPT_LENGTH} characters).`,
+      });
+    }
+    if (manualOverrideModelId !== undefined && !isKnownModelId(manualOverrideModelId)) {
+      return res.status(400).json({ error: 'Unknown manualOverrideModelId.' });
     }
 
-    const activePolicy = policyOverride ? { ...currentPolicy, ...policyOverride } : currentPolicy;
+    const sanitizedOverride = sanitizePolicyOverride(policyOverride);
+    if (sanitizedOverride === null) {
+      return res.status(400).json({ error: 'Invalid policyOverride payload.' });
+    }
+    const useNeuralFlag = useNeural !== false;
+
+    const activePolicy = sanitizedOverride
+      ? { ...currentPolicy, ...sanitizedOverride }
+      : currentPolicy;
 
     // Use ONNX neural classifier when available and requested
     let analysis;
-    if (useNeural && onnxInitialized) {
+    if (useNeuralFlag && onnxInitialized) {
       analysis = await analyzeRoutingWithONNX(prompt, activePolicy);
       analysis.classifier = 'onnx-neural';
     } else {
@@ -666,12 +763,17 @@ app.post('/api/route/execute', async (req, res) => {
 app.post('/api/benchmark/run', async (req, res) => {
   try {
     const { benchmarkType = 'ALL', sampleSize = 6 } = req.body;
+    const cleanBenchmarkType = asEnum(benchmarkType, ['ALL', 'GSM8K', 'MMLU', 'EnterpriseOps', 'CodeRefactor'] as const);
+    if (!cleanBenchmarkType) {
+      return res.status(400).json({ error: 'Invalid benchmarkType.' });
+    }
+    const cleanSampleSize = Math.round(asNumberInRange(sampleSize, 1, 20) ?? 6);
 
     let itemsToTest = BENCHMARK_DATASET;
-    if (benchmarkType !== 'ALL') {
-      itemsToTest = BENCHMARK_DATASET.filter((item) => item.benchmark === benchmarkType);
+    if (cleanBenchmarkType !== 'ALL') {
+      itemsToTest = BENCHMARK_DATASET.filter((item) => item.benchmark === cleanBenchmarkType);
     }
-    itemsToTest = itemsToTest.slice(0, Number(sampleSize));
+    itemsToTest = itemsToTest.slice(0, cleanSampleSize);
 
     const results: BenchmarkResult[] = [];
 
@@ -770,13 +872,22 @@ app.post('/api/benchmark/run', async (req, res) => {
 // 4b. Head-to-Head A/B Model Comparison on Complexity-Scored Prompts
 app.post('/api/benchmark/ab-compare', async (req, res) => {
   try {
-    const { modelAId, modelBId, prompt, groundTruth } = req.body;
-    if (!modelAId || !modelBId || !prompt) {
-      return res.status(400).json({ error: 'modelAId, modelBId, and prompt are required.' });
+    const { modelAId, modelBId, groundTruth } = req.body;
+    const prompt = asValidString(req.body.prompt, MAX_PROMPT_LENGTH);
+    if (!isKnownModelId(modelAId) || !isKnownModelId(modelBId)) {
+      return res.status(400).json({ error: 'Unknown modelAId or modelBId.' });
+    }
+    if (!prompt) {
+      return res.status(400).json({ error: `Valid prompt is required (max ${MAX_PROMPT_LENGTH} characters).` });
+    }
+    const cleanGroundTruth =
+      groundTruth === undefined ? undefined : asValidString(groundTruth, MAX_GROUND_TRUTH_LENGTH);
+    if (groundTruth !== undefined && cleanGroundTruth === null) {
+      return res.status(400).json({ error: `groundTruth exceeds ${MAX_GROUND_TRUTH_LENGTH} characters.` });
     }
 
-    const modelASpec = SUPPORTED_MODELS.find((m) => m.id === modelAId) || SUPPORTED_MODELS[0];
-    const modelBSpec = SUPPORTED_MODELS.find((m) => m.id === modelBId) || SUPPORTED_MODELS[SUPPORTED_MODELS.length - 1];
+    const modelASpec = SUPPORTED_MODELS.find((m) => m.id === modelAId)!;
+    const modelBSpec = SUPPORTED_MODELS.find((m) => m.id === modelBId)!;
 
     const analysis = analyzeComplexity(prompt, currentPolicy);
 
@@ -895,7 +1006,7 @@ app.post('/api/benchmark/ab-compare', async (req, res) => {
       id: `ab-${Date.now()}`,
       timestamp: new Date().toISOString(),
       prompt,
-      groundTruth,
+      groundTruth: cleanGroundTruth,
       complexityScore: analysis.overallComplexity,
       complexityCategory: analysis.detectedCategory,
       modelA: {
@@ -1004,10 +1115,14 @@ app.get('/api/config/routing-policy', (_req, res) => {
   res.json(currentPolicy);
 });
 
-app.post('/api/config/routing-policy', (req, res) => {
+// Policy updates mutate the global routing policy — require auth
+app.post('/api/config/routing-policy', requireAuth, (req, res) => {
   try {
-    const updated = req.body;
-    currentPolicy = { ...currentPolicy, ...updated };
+    const sanitized = sanitizePolicyOverride(req.body);
+    if (sanitized === null || sanitized === undefined) {
+      return res.status(400).json({ error: 'Invalid policy payload.' });
+    }
+    currentPolicy = { ...currentPolicy, ...sanitized };
     res.json({ success: true, policy: currentPolicy });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update policy' });
@@ -1037,7 +1152,7 @@ app.get('/api/traces', (req, res) => {
 });
 
 // 6c. Per-Request Governance Override (operator dispatch correction)
-app.post('/api/traces/:id/override', (req, res) => {
+app.post('/api/traces/:id/override', requireAuth, (req, res) => {
   try {
     const { modelId, reason, userName } = req.body;
     const trace = traceHistory.find((t) => t.id === req.params.id);
@@ -1047,13 +1162,16 @@ app.post('/api/traces/:id/override', (req, res) => {
     if (!modelId || !SUPPORTED_MODELS.some((m) => m.id === modelId)) {
       return res.status(400).json({ error: 'A valid target modelId is required.' });
     }
+    const cleanReason = asValidString(reason, 300) || 'Manual governance override applied by operator.';
+    const cleanUser =
+      (typeof userName === 'string' ? asValidString(userName, 60) : null) || 'ops-admin';
 
     const overrideEntry = {
       traceId: trace.id,
       previousModelId: trace.selectedModelId,
       overriddenModelId: modelId,
-      reason: reason || 'Manual governance override applied by operator.',
-      overriddenBy: userName || 'ops-admin',
+      reason: cleanReason,
+      overriddenBy: cleanUser,
       overriddenAt: new Date().toISOString(),
     };
 
@@ -1082,28 +1200,38 @@ app.get('/api/config/rules', (_req, res) => {
   res.json({ rules: [...routingRules].sort((a, b) => a.priority - b.priority) });
 });
 
-app.post('/api/config/rules', (req, res) => {
+app.post('/api/config/rules', requireAuth, (req, res) => {
   try {
     const { name, description, conditions, actions, priority, enabled } = req.body;
-    if (!name || typeof name !== 'string') {
-      return res.status(400).json({ error: 'Rule name is required.' });
+    const cleanName = asValidString(name, 120);
+    if (!cleanName) {
+      return res.status(400).json({ error: 'Rule name is required (max 120 characters).' });
     }
-    if (!Array.isArray(conditions) || conditions.length === 0) {
-      return res.status(400).json({ error: 'At least one condition is required.' });
+    const cleanDescription =
+      description === undefined ? '' : asValidString(description, 500) ?? '';
+    const cleanConditions = sanitizeRuleConditions(conditions);
+    if (!cleanConditions) {
+      return res.status(400).json({
+        error: 'Conditions failed validation (max 10, each with valid field/operator/value).',
+      });
     }
-    if (!Array.isArray(actions) || actions.length === 0) {
-      return res.status(400).json({ error: 'At least one action is required.' });
+    const cleanActions = sanitizeRuleActions(actions);
+    if (!cleanActions) {
+      return res.status(400).json({
+        error: 'Actions failed validation (max 10, each with valid type/reason).',
+      });
     }
+    const cleanPriority = asNumberInRange(priority ?? 100, 0, 9999);
 
     const now = new Date().toISOString();
     const rule: RoutingRule = {
       id: `rule-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      name,
-      description: description || '',
+      name: cleanName,
+      description: cleanDescription,
       enabled: enabled !== false,
-      priority: typeof priority === 'number' ? priority : 100,
-      conditions,
-      actions,
+      priority: cleanPriority ?? 100,
+      conditions: cleanConditions,
+      actions: cleanActions,
       createdAt: now,
       updatedAt: now,
       createdBy: 'ops-admin',
@@ -1115,19 +1243,39 @@ app.post('/api/config/rules', (req, res) => {
   }
 });
 
-app.patch('/api/config/rules/:id', (req, res) => {
+app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
   try {
     const rule = routingRules.find((r) => r.id === req.params.id);
     if (!rule) {
       return res.status(404).json({ error: 'Routing rule not found.' });
     }
     const { name, description, enabled, priority, conditions, actions } = req.body;
-    if (typeof name === 'string') rule.name = name;
-    if (typeof description === 'string') rule.description = description;
+    if (name !== undefined) {
+      const cleanName = asValidString(name, 120);
+      if (!cleanName) return res.status(400).json({ error: 'Invalid rule name (max 120 characters).' });
+      rule.name = cleanName;
+    }
+    if (description !== undefined) {
+      const cleanDescription = asValidString(description, 500);
+      if (cleanDescription === null) return res.status(400).json({ error: 'Invalid description (max 500 characters).' });
+      rule.description = cleanDescription;
+    }
     if (typeof enabled === 'boolean') rule.enabled = enabled;
-    if (typeof priority === 'number') rule.priority = priority;
-    if (Array.isArray(conditions) && conditions.length > 0) rule.conditions = conditions;
-    if (Array.isArray(actions) && actions.length > 0) rule.actions = actions;
+    if (priority !== undefined) {
+      const cleanPriority = asNumberInRange(priority, 0, 9999);
+      if (cleanPriority === undefined) return res.status(400).json({ error: 'Invalid priority (0-9999).' });
+      rule.priority = Math.round(cleanPriority);
+    }
+    if (conditions !== undefined) {
+      const cleanConditions = sanitizeRuleConditions(conditions);
+      if (!cleanConditions) return res.status(400).json({ error: 'Conditions failed validation.' });
+      rule.conditions = cleanConditions;
+    }
+    if (actions !== undefined) {
+      const cleanActions = sanitizeRuleActions(actions);
+      if (!cleanActions) return res.status(400).json({ error: 'Actions failed validation.' });
+      rule.actions = cleanActions;
+    }
     rule.updatedAt = new Date().toISOString();
     res.json({ success: true, rule });
   } catch (error: any) {
@@ -1135,7 +1283,7 @@ app.patch('/api/config/rules/:id', (req, res) => {
   }
 });
 
-app.delete('/api/config/rules/:id', (req, res) => {
+app.delete('/api/config/rules/:id', requireAuth, (req, res) => {
   const before = routingRules.length;
   routingRules = routingRules.filter((r) => r.id !== req.params.id);
   if (routingRules.length === before) {
@@ -1149,6 +1297,17 @@ function bearerToken(req: express.Request): string | null {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
   return scheme?.toLowerCase() === 'bearer' && token ? token.trim() : null;
+}
+
+// Require a valid session for mutating requests
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const token = bearerToken(req);
+  const result = token ? getUserForToken(token) : null;
+  if (!result) {
+    return res.status(401).json({ error: 'Authentication required.' });
+  }
+  (req as any).authUser = result.user;
+  next();
 }
 
 app.post('/api/auth/signup', (req, res) => {
@@ -1204,6 +1363,27 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ user: result.user });
 });
 
+// Demo SSO — server-side login for the seeded demo persona (credentials never reach the client)
+app.post('/api/auth/demo-sso', (_req, res) => {
+  try {
+    const demoEmail = 'alex.vance@cloud-vertex.ai';
+    const demoPassword = process.env.DEMO_PASSWORD || 'demo1234';
+    const result = authenticateUser(demoEmail, demoPassword);
+    if (!result) {
+      return res.status(500).json({ error: 'Demo account is unavailable.' });
+    }
+    const session = createSession(result.user.id);
+    res.json({
+      success: true,
+      user: result.user,
+      token: session?.token,
+      expiresAt: session?.expiresAt,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Demo SSO failed' });
+  }
+});
+
 app.post('/api/auth/logout', (req, res) => {
   const token = bearerToken(req);
   if (token) destroySession(token);
@@ -1224,8 +1404,11 @@ const GROQ_CANDIDATE_MODELS = [
 app.post('/api/chat', async (req, res) => {
   const startTime = Date.now();
   const { messages } = req.body;
-  if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: 'Valid messages array is required.' });
+  const cleanMessages = sanitizeChatMessages(messages);
+  if (!cleanMessages) {
+    return res.status(400).json({
+      error: 'Messages must be an array of 1-50 items with valid role and content (max 4000 characters each).',
+    });
   }
 
   const systemMessage = {
@@ -1236,9 +1419,9 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
 
   const formattedMessages = [
     systemMessage,
-    ...messages.map((m: any) => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content || '',
+    ...cleanMessages.map((m) => ({
+      role: m.role === 'system' ? 'system' : m.role,
+      content: m.content,
     })),
   ];
 
@@ -1291,7 +1474,7 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
   }
 
   // Backup fallback via Gemini SDK
-  const lastUserPrompt = messages[messages.length - 1]?.content || 'Hello';
+  const lastUserPrompt = cleanMessages[cleanMessages.length - 1]?.content || 'Hello';
   if (ai) {
     try {
       const geminiRes = await ai.models.generateContent({

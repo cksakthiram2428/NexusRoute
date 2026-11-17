@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ShieldCheck, Lock, FileText, Check, Sliders, Cookie, Sparkles, CheckCircle2 } from 'lucide-react';
+import { showToast } from '../lib/toast';
 
 interface LegalModalsProps {
   isPrivacyOpen: boolean;
@@ -18,6 +19,13 @@ export const LegalModals: React.FC<LegalModalsProps> = ({
     return (localStorage.getItem('nexusroute_cookie_consent') as any) || 'pending';
   });
 
+  // Re-open the banner when the "Reset Cookie Preference" feature fires its event
+  useEffect(() => {
+    const showBanner = () => setCookieConsent('pending');
+    window.addEventListener('nexusroute:show-cookie-banner', showBanner);
+    return () => window.removeEventListener('nexusroute:show-cookie-banner', showBanner);
+  }, []);
+
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefAnalytics, setPrefAnalytics] = useState(true);
   const [prefTelemetry, setPrefTelemetry] = useState(true);
@@ -25,11 +33,13 @@ export const LegalModals: React.FC<LegalModalsProps> = ({
   const handleAcceptCookies = () => {
     localStorage.setItem('nexusroute_cookie_consent', 'accepted');
     setCookieConsent('accepted');
+    showToast('Cookie preferences saved — analytics enabled', 'info');
   };
 
   const handleDeclineCookies = () => {
     localStorage.setItem('nexusroute_cookie_consent', 'declined');
     setCookieConsent('declined');
+    showToast('Cookie preferences saved — analytics declined', 'info');
   };
 
   const handleSavePreferences = () => {
@@ -40,6 +50,7 @@ export const LegalModals: React.FC<LegalModalsProps> = ({
     localStorage.setItem('nexusroute_cookie_consent', 'custom');
     setCookieConsent('accepted');
     setPreferencesOpen(false);
+    showToast('Cookie preferences saved', 'info');
   };
 
   return (

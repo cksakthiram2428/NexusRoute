@@ -21,6 +21,7 @@ import {
   RuleConditionOperator,
 } from '../types/router';
 import { showToast } from '../lib/toast';
+import { authHeaders } from '../lib/authHeader';
 
 const CONDITION_FIELDS: { value: RuleConditionField; label: string; numeric: boolean }[] = [
   { value: 'prompt_contains', label: 'Prompt contains', numeric: false },
@@ -85,7 +86,7 @@ export const RoutingRulesPanel: React.FC<RoutingRulesPanelProps> = ({ onChanged 
     try {
       const res = await fetch(`/api/config/rules/${rule.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ enabled: !rule.enabled }),
       });
       if (res.ok) {
@@ -104,7 +105,10 @@ export const RoutingRulesPanel: React.FC<RoutingRulesPanelProps> = ({ onChanged 
 
   const handleDelete = async (rule: RoutingRule) => {
     try {
-      const res = await fetch(`/api/config/rules/${rule.id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/config/rules/${rule.id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
       if (res.ok) {
         setRules((current) => current.filter((r) => r.id !== rule.id));
         showToast(`Rule "${rule.name}" deleted`, 'info');
@@ -137,7 +141,7 @@ export const RoutingRulesPanel: React.FC<RoutingRulesPanelProps> = ({ onChanged 
     try {
       const res = await fetch('/api/config/rules', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           name: newName.trim(),
           description: newDescription.trim(),

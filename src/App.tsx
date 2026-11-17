@@ -24,7 +24,7 @@ import {
 } from './types/router';
 import { DEFAULT_ROUTING_POLICY } from './lib/classifier';
 import { SUPPORTED_MODELS, formatUsd } from './lib/pricing';
-import { X, Copy, Check, Clock, Layers, Coins, Cpu, ShieldCheck, Zap, Cookie, ArrowUp, Keyboard, Info, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { X, Copy, Check, Clock, Layers, Coins, Cpu, ShieldCheck, Zap, ArrowUp, Keyboard, Info, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { showToast } from './lib/toast';
 
 export default function App() {
@@ -39,29 +39,6 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; message: string; kind: 'success' | 'info' | 'error' }[]>([]);
   const [showBackTop, setShowBackTop] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-
-  // Cookie consent banner state (Feature #5)
-  const [showCookieBanner, setShowCookieBanner] = useState(() => {
-    try {
-      return localStorage.getItem('nexusroute_cookie_consent') !== 'accepted';
-    } catch {
-      return true;
-    }
-  });
-
-  useEffect(() => {
-    const showBanner = () => setShowCookieBanner(true);
-    window.addEventListener('nexusroute:show-cookie-banner', showBanner);
-    return () => window.removeEventListener('nexusroute:show-cookie-banner', showBanner);
-  }, []);
-
-  const handleCookieConsent = (accepted: boolean) => {
-    try {
-      localStorage.setItem('nexusroute_cookie_consent', accepted ? 'accepted' : 'declined');
-    } catch {}
-    setShowCookieBanner(false);
-    showToast(accepted ? 'Cookie preferences saved — analytics enabled' : 'Cookie preferences saved — analytics declined', 'info');
-  };
 
   // Global toast listener (event-based, avoids prop drilling)
   useEffect(() => {
@@ -153,24 +130,11 @@ export default function App() {
     fetchSystemData();
   }, []);
 
-  // Restore authenticated session from localStorage on mount
+  // Always open the app logged out — Overview is public, panels require sign-in
   useEffect(() => {
     try {
-      const token = localStorage.getItem('nexusroute_session_token');
-      if (!token) return;
-      fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data?.user) {
-            setCurrentUser(data.user);
-          } else {
-            localStorage.removeItem('nexusroute_session_token');
-          }
-        })
-        .catch(() => localStorage.removeItem('nexusroute_session_token'));
-    } catch {
       localStorage.removeItem('nexusroute_session_token');
-    }
+    } catch {}
   }, []);
 
   const handleLogin = (session: UserSession, token: string) => {
@@ -370,32 +334,7 @@ export default function App() {
         onCloseTerms={() => setIsTermsOpen(false)}
       />
 
-      {/* Cookie Consent Banner (Feature #5) */}
-      {showCookieBanner && (
-        <div className="fixed bottom-4 left-4 right-4 sm:left-4 sm:right-auto sm:w-[380px] z-50 bg-white dark:bg-slate-900 border border-[#CBD8E8] dark:border-slate-700 rounded-3xl p-5 shadow-2xl space-y-3">
-          <div className="flex items-center gap-2">
-            <Cookie className="w-4 h-4 text-[#0F1B31] dark:text-sky-400" />
-            <h3 className="text-xs font-bold text-[#020C21] dark:text-slate-100">Cookie Consent</h3>
-          </div>
-          <p className="text-[11px] text-[#59627E] dark:text-slate-400 leading-relaxed">
-            NexusRoute uses strictly necessary cookies for routing telemetry and policy persistence only. No third-party tracking or advertising cookies are deployed.
-          </p>
-          <div className="flex gap-2">
-            <button
-              onClick={() => handleCookieConsent(true)}
-              className="flex-1 px-3 py-2 rounded-full bg-[#0F1B31] dark:bg-sky-500 hover:bg-[#1A2B45] dark:hover:bg-sky-400 text-white dark:text-slate-950 text-xs font-semibold cursor-pointer transition-all"
-            >
-              Accept All
-            </button>
-            <button
-              onClick={() => handleCookieConsent(false)}
-              className="flex-1 px-3 py-2 rounded-full bg-[#E6EDF6] dark:bg-slate-800 hover:bg-[#CBD8E8] dark:hover:bg-slate-700 text-[#020C21] dark:text-slate-200 text-xs font-semibold cursor-pointer border border-[#CBD8E8] dark:border-slate-700 transition-all"
-            >
-              Decline
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Cookie Consent is handled by LegalModals (single implementation, Feature #5) */}
 
       {/* Audit Trace Detail Modal */}
       {selectedTrace && (

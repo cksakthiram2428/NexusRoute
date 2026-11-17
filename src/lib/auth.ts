@@ -44,6 +44,9 @@ const SCRYPT_N = 16384;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 
+// Session lifetime in milliseconds — configurable, default 8 hours
+const SESSION_TTL_MS = Math.max(5, Number(process.env.SESSION_TTL_MINUTES || 480)) * 60_000;
+
 let db: DatabaseSync | null = null;
 
 function hashPassword(password: string): string {
@@ -169,13 +172,14 @@ export function initAuthStore(): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expiresAt);
   `);
 
-  // Seed the two demo workspace accounts (documented in README/report)
+  // Seed the two demo workspace accounts (passwords configurable via DEMO_PASSWORD env)
+  const demoPassword = process.env.DEMO_PASSWORD || 'demo1234';
   const seedDemoUser = (email: string, name: string, organization: string, role: string) => {
     const exists = db?.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (!exists) {
       insertUser({
         email,
-        password: 'demo1234',
+        password: demoPassword,
         name,
         organization,
         role,
@@ -250,7 +254,7 @@ export function createSession(userId: string): SessionResult | null {
 
   const token = randomBytes(32).toString('hex');
   const now = Date.now();
-  const expiresAt = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
 
   // Purge expired sessions opportunistically
   db.prepare('DELETE FROM sessions WHERE expiresAt < ?').run(new Date(now).toISOString());

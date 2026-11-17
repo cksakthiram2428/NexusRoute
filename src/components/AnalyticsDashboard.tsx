@@ -42,6 +42,7 @@ import { TraceInspectorModal } from './TraceInspectorModal';
 import { RoutingRulesPanel } from './RoutingRulesPanel';
 import { SkeletonTable } from './Skeleton';
 import { SUPPORTED_MODELS } from '../lib/pricing';
+import { authHeaders } from '../lib/authHeader';
 
 interface AnalyticsDashboardProps {
   metrics: SystemMetrics | null;
@@ -175,7 +176,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const handleOverride = async (traceId: string, modelId: string, reason: string) => {
     const res = await fetch(`/api/traces/${traceId}/override`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ modelId, reason, userName: 'ops-admin' }),
     });
     if (!res.ok) {
