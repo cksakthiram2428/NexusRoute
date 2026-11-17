@@ -98,7 +98,7 @@ export function sanitizePolicyOverride(
 }
 
 export interface SanitizedChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
 }
 
@@ -109,7 +109,8 @@ export function sanitizeChatMessages(value: unknown): SanitizedChatMessage[] | n
   const sanitized: SanitizedChatMessage[] = [];
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null) return null;
-    const role = asEnum((entry as any).role, ['user', 'assistant', 'system'] as const);
+    // Clients may only send user/assistant turns — the server owns the system prompt
+    const role = asEnum((entry as any).role, ['user', 'assistant'] as const);
     const content = asValidString((entry as any).content, MAX_CHAT_CONTENT_LENGTH);
     if (!role || !content) return null;
     sanitized.push({ role, content });

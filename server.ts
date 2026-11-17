@@ -244,9 +244,13 @@ const SEED_AUDIT_PROMPTS: string[] = [
   'Calculate the internal rate of return for a 5-year cash flow stream.',
 ];
 
-function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace {
+function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace | null {
   const rawAnalysis = analyzeComplexity(prompt, currentPolicy);
   const evaluation = applyRoutingRules(rawAnalysis, prompt, routingRules, currentPolicy);
+  // Skip prompts the governance rules block — blocked requests never execute
+  if (evaluation.blocked) {
+    return null;
+  }
   const analysis = evaluation.analysis;
   const modelId = analysis.recommendedModelId;
   const tier = analysis.recommendedModelTier;
@@ -289,7 +293,8 @@ function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace {
   for (let i = 0; i < 300; i++) {
     const minutesAgo = Math.floor(i * 37 + Math.random() * 20);
     const prompt = SEED_AUDIT_PROMPTS[i % SEED_AUDIT_PROMPTS.length];
-    traceHistory.push(buildSeedTrace(prompt, new Date(now - minutesAgo * 60_000)));
+    const trace = buildSeedTrace(prompt, new Date(now - minutesAgo * 60_000));
+    if (trace) traceHistory.push(trace);
   }
   traceHistory.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 })();
@@ -529,7 +534,7 @@ app.get('/api/models/health', async (_req, res) => {
 });
 
 // 2a. Neural Classification via ONNX Model
-app.post('/api/classify', async (req, res) => {
+app.post('/api/classify', requireAuth, async (req, res) => {
   try {
     const { prompt } = req.body;
     const cleanPrompt = asValidString(prompt, MAX_PROMPT_LENGTH);
@@ -624,8 +629,8 @@ app.post('/api/route/analyze', async (req, res) => {
   }
 });
 
-// 3. Execute Routed Request (Single or Multi-part decomposed)
-app.post('/api/route/execute', async (req, res) => {
+// 3. Execute Routed Request (Single or Multi-part decomposed) — auth required (cost-bearing)
+app.post('/api/route/execute', requireAuth, async (req, res) => {
   try {
     const { manualOverrideModelId, policyOverride, useNeural = true } = req.body;
     const prompt = asValidString(req.body.prompt, MAX_PROMPT_LENGTH);
@@ -1106,8 +1111,8 @@ app.post('/api/benchmark/ab-compare', async (req, res) => {
   }
 });
 
-// 5. System Statistics & Metrics
-app.get('/api/stats/summary', (_req, res) => {
+// 5. System Statistics & Metrics (auth required — includes prompt ledger)
+app.get('/api/stats/summary', requireAuth, (_req, res) => {
   const totalRequests = traceHistory.length;
   const baselineCost = traceHistory.reduce((a, b) => a + b.baselineCost, 0);
   const actualCost = traceHistory.reduce((a, b) => a + b.totalCost, 0);
@@ -1171,7 +1176,7 @@ app.post('/api/config/routing-policy', requireAuth, (req, res) => {
 });
 
 // 6b. Request Audit Ledger (Transparency & Governance)
-app.get('/api/traces', (req, res) => {
+app.get('/api/traces', requireAuth, (req, res) => {
   const { search, tier, limit } = req.query;
   let filtered = traceHistory;
 
@@ -1409,9 +1414,13 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ user: result.user });
 });
 
-// Demo SSO — server-side login for the seeded demo persona (credentials never reach the client)
+// Demo SSO — server-side login for the seeded demo persona. Disabled in
+// production unless DEMO_SSO_ENABLED=true is set explicitly.
 app.post('/api/auth/demo-sso', (_req, res) => {
   try {
+    if (process.env.NODE_ENV === 'production' && process.env.DEMO_SSO_ENABLED !== 'true') {
+      return res.status(404).json({ error: 'Demo SSO is disabled in production.' });
+    }
     const demoEmail = 'alex.vance@cloud-vertex.ai';
     const demoPassword = process.env.DEMO_PASSWORD || 'demo1234';
     const result = authenticateUser(demoEmail, demoPassword);
@@ -1447,7 +1456,7 @@ const GROQ_CANDIDATE_MODELS = [
   'llama-3.3-70b-versatile',
 ];
 
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', requireAuth, async (req, res) => {
   const startTime = Date.now();
   const { messages } = req.body;
   const cleanMessages = sanitizeChatMessages(messages);
@@ -1466,7 +1475,7 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
   const formattedMessages = [
     systemMessage,
     ...cleanMessages.map((m) => ({
-      role: m.role === 'system' ? 'system' : m.role,
+      role: m.role,
       content: m.content,
     })),
   ];

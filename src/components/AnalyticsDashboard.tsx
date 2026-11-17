@@ -36,6 +36,7 @@ import {
 } from 'recharts';
 import { ExecutionTrace, SystemMetrics } from '../types/router';
 import { formatUsd } from '../lib/pricing';
+import { UserSession } from './LoginPage';
 import { ActiveTab } from './Header';
 import { TopPanelBar, BottomNextStep } from './PanelNavigation';
 import { TraceInspectorModal } from './TraceInspectorModal';
@@ -48,6 +49,7 @@ interface AnalyticsDashboardProps {
   metrics: SystemMetrics | null;
   onRefresh: () => void;
   onNavigate?: (tab: ActiveTab) => void;
+  currentUser?: UserSession | null;
 }
 
 // Generate realistic daily trend data over 30 days
@@ -144,6 +146,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   metrics,
   onRefresh,
   onNavigate,
+  currentUser,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [tierFilter, setTierFilter] = useState('ALL');
@@ -157,7 +160,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
   const fetchTraces = useCallback(async () => {
     try {
-      const res = await fetch('/api/traces?limit=100');
+      const res = await fetch('/api/traces?limit=100', { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         setTraces(data.traces || []);
@@ -177,11 +180,20 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     const res = await fetch(`/api/traces/${traceId}/override`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ modelId, reason, userName: 'ops-admin' }),
+      body: JSON.stringify({
+        modelId,
+        reason,
+        userName: currentUser?.email || currentUser?.name || 'ops-admin',
+      }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || 'Override request failed.');
+    }
+    const data = await res.json();
+    // Keep the open inspector in sync with the server state
+    if (data?.trace) {
+      setSelectedTrace(data.trace);
     }
     await fetchTraces();
     onRefresh();

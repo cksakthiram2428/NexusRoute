@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { authHeaders } from '../lib/authHeader';
 import {
   Send,
   Sparkles,
@@ -94,7 +95,7 @@ export const ChatCopilot: React.FC<ChatCopilotProps> = ({ onNavigate }) => {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           messages: newMessages.map((m) => ({ role: m.role, content: m.content })),
         }),

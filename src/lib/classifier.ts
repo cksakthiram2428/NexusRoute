@@ -375,13 +375,32 @@ export function applyRoutingRules(
 
         case 'boost_signal': {
           const weight = action.signalWeight ?? 10;
-          working.overallComplexity = Math.max(5, Math.min(98, working.overallComplexity + weight));
+          // Zero-egress confinement wins: PII/local-pinned prompts stay local
+          // even when a rule boosts their complexity score.
+          const privacyLocked =
+            working.complexitySignals.some((s) => /privacy|pii|zero-egress/i.test(s.name)) ||
+            policy.privacyStrictLocal === true;
+
           working.complexitySignals.push({
             name: action.signalName || `Governance Signal: ${rule.name}`,
             weight,
             description: action.reason,
             triggered: true,
           });
+
+          if (privacyLocked) {
+            working.overallComplexity = Math.max(
+              5,
+              Math.min(policy.localThreshold, Math.round(working.overallComplexity + weight))
+            );
+            working.recommendedModelTier = 'local';
+            working.recommendedModelId = DEFAULT_LOCAL_MODEL_ID;
+            working.routingPolicyMatched = `Rule: ${rule.name}`;
+            working.routingRationale = `${working.routingRationale}\n[Rule Engine] "${rule.name}" boosted the signal but the PII lock confined execution to local: ${action.reason}`;
+            break;
+          }
+
+          working.overallComplexity = Math.max(5, Math.min(98, working.overallComplexity + weight));
           // Re-derive the tier from policy thresholds after the score shift
           if (working.overallComplexity <= policy.localThreshold) {
             working.recommendedModelTier = 'local';

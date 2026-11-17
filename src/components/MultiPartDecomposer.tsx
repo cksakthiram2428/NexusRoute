@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { authHeaders } from '../lib/authHeader';
 import {
   Split,
   Layers,
@@ -66,7 +67,7 @@ export const MultiPartDecomposer: React.FC<MultiPartDecomposerProps> = ({
     try {
       const res = await fetch('/api/route/execute', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ prompt, policyOverride: policy }),
       });
       if (res.ok) {

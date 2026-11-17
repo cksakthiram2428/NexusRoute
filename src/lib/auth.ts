@@ -215,7 +215,8 @@ export function createUser(input: {
 
   const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
   if (exists) {
-    return { error: 'An account with this email already exists.' };
+    // Generic message — do not reveal whether the email is registered
+    return { error: 'Unable to create an account with those details.' };
   }
 
   const user = insertUser({

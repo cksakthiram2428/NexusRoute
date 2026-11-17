@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { authHeaders } from '../lib/authHeader';
 import {
   Play,
   Sparkles,
@@ -237,7 +238,7 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({
     try {
       const res = await fetch('/api/route/execute', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           prompt,
           manualOverrideModelId: overrideModelId || undefined,
