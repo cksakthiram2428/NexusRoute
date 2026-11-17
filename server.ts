@@ -22,6 +22,7 @@ import {
   getLoadStatus,
 } from './src/lib/loadManager';
 import { loadOrSeedRoutingRules, saveRuleToDb, deleteRuleFromDb } from './src/lib/rulesStore';
+import { loadOrSeedTraces, insertTrace, updateTrace } from './src/lib/tracesStore';
 import { analyzeRoutingWithONNX, initONNXClassifier } from './src/lib/onnx-classifier';
 import {
   calculateCost,
@@ -152,7 +153,7 @@ const ai = apiKey
 // System in-memory store
 let currentPolicy: RoutingPolicyConfig = { ...DEFAULT_ROUTING_POLICY };
 let onnxInitialized = false;
-const traceHistory: ExecutionTrace[] = [];
+let traceHistory: ExecutionTrace[] = [];
 
 // Governance rules engine store (admin-managed routing rules; mirrored to SQLite)
 const DEFAULT_ROUTING_RULES: RoutingRule[] = [
@@ -308,13 +309,15 @@ function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace | null 
 
 (function seedTraceHistory() {
   const now = Date.now();
+  const seeds: ExecutionTrace[] = [];
   for (let i = 0; i < 300; i++) {
     const minutesAgo = Math.floor(i * 37 + Math.random() * 20);
     const prompt = SEED_AUDIT_PROMPTS[i % SEED_AUDIT_PROMPTS.length];
     const trace = buildSeedTrace(prompt, new Date(now - minutesAgo * 60_000));
-    if (trace) traceHistory.push(trace);
+    if (trace) seeds.push(trace);
   }
-  traceHistory.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  // Load the persisted ledger; first boot writes the synthetic seed set
+  traceHistory = loadOrSeedTraces(seeds);
 })();
 
 // Initialize SQLite auth store (hashed credentials, persistent sessions)
@@ -759,6 +762,7 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
       };
 
       traceHistory.unshift(trace);
+      insertTrace(trace);
       while (traceHistory.length > 300) traceHistory.pop();
 
       return res.json(trace);
@@ -808,6 +812,7 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
     };
 
     traceHistory.unshift(trace);
+    insertTrace(trace);
     if (traceHistory.length > 50) traceHistory.pop();
 
     res.json(trace);
@@ -1245,6 +1250,7 @@ app.post('/api/traces/:id/override', requireAuth, (req, res) => {
     trace.routingAnalysis.routingRationale = `${trace.routingAnalysis.routingRationale}\n[Override] Manual dispatch to ${modelId}: ${overrideEntry.reason}`;
 
     // Reconcile ledger economics against the overridden dispatch
+    updateTrace(trace);
     trace.totalCost = calculateCost(modelId, trace.totalTokens.input, trace.totalTokens.output);
     trace.costReductionPercent =
       trace.baselineCost > 0
@@ -1360,6 +1366,44 @@ app.delete('/api/config/rules/:id', requireAuth, (req, res) => {
 // 6e. Load Manager — runtime saturation & health telemetry
 app.get('/api/load/status', (_req, res) => {
   res.json(getLoadStatus());
+});
+
+// 6f. Prometheus-style metrics (aggregate telemetry only — no prompt content)
+app.get('/metrics', (_req, res) => {
+  const total = traceHistory.length;
+  const baseline = traceHistory.reduce((acc, t) => acc + t.baselineCost, 0);
+  const actual = traceHistory.reduce((acc, t) => acc + t.totalCost, 0);
+  const saved = Math.max(0, baseline - actual);
+  const tierCounts: Record<string, number> = { local: 0, cloud_lite: 0, cloud_standard: 0, cloud_flagship: 0 };
+  traceHistory.forEach((t) => {
+    const tier = t.routingAnalysis.recommendedModelTier;
+    if (tierCounts[tier] !== undefined) tierCounts[tier]++;
+  });
+
+  const lines = [
+    '# HELP nexusroute_requests_total Total audit traces stored',
+    '# TYPE nexusroute_requests_total gauge',
+    `nexusroute_requests_total ${total}`,
+    '# HELP nexusroute_baseline_cost_usd_total Cumulative monolithic flagship spend baseline',
+    '# TYPE nexusroute_baseline_cost_usd_total gauge',
+    `nexusroute_baseline_cost_usd_total ${baseline.toFixed(6)}`,
+    '# HELP nexusroute_actual_cost_usd_total Cumulative routed spend',
+    '# TYPE nexusroute_actual_cost_usd_total gauge',
+    `nexusroute_actual_cost_usd_total ${actual.toFixed(6)}`,
+    '# HELP nexusroute_cost_saved_usd_total Net dollars saved vs flagship',
+    '# TYPE nexusroute_cost_saved_usd_total gauge',
+    `nexusroute_cost_saved_usd_total ${saved.toFixed(6)}`,
+    '# HELP nexusroute_tier_requests_total Audit traces routed per tier',
+    '# TYPE nexusroute_tier_requests_total gauge',
+    ...Object.entries(tierCounts).map(([tier, count]) => `nexusroute_tier_requests_total{tier="${tier}"} ${count}`),
+    '# HELP nexusroute_uptime_seconds Process uptime',
+    '# TYPE nexusroute_uptime_seconds gauge',
+    `nexusroute_uptime_seconds ${Math.floor(process.uptime())}`,
+    '# HELP nexusroute_heap_used_bytes JS heap used',
+    '# TYPE nexusroute_heap_used_bytes gauge',
+    `nexusroute_heap_used_bytes ${process.memoryUsage().heapUsed}`,
+  ];
+  res.type('text/plain').send(lines.join('\n') + '\n');
 });
 
 // 6e. Authentication (SQLite-backed store, scrypt-hashed passwords, hashed session tokens)
