@@ -186,44 +186,6 @@ export const geminiBreaker = new CircuitBreaker('gemini-cloud', CB_THRESHOLD, CB
 export const groqBreaker = new CircuitBreaker('groq-lpu', CB_THRESHOLD, CB_COOLDOWN_MS);
 
 // ---------------------------------------------------------------------------
-// Short-TTL LRU cache for repeated routing analysis
-// ---------------------------------------------------------------------------
-class LruCache<V> {
-  private map = new Map<string, { value: V; expiresAt: number }>();
-
-  constructor(private readonly maxEntries: number, private readonly ttlMs: number) {}
-
-  get(key: string): V | undefined {
-    const entry = this.map.get(key);
-    if (!entry) return undefined;
-    if (Date.now() > entry.expiresAt) {
-      this.map.delete(key);
-      return undefined;
-    }
-    this.map.delete(key);
-    this.map.set(key, entry);
-    return entry.value;
-  }
-
-  set(key: string, value: V): void {
-    if (this.map.size >= this.maxEntries) {
-      const oldest = this.map.keys().next().value;
-      if (oldest !== undefined) this.map.delete(oldest);
-    }
-    this.map.set(key, { value, expiresAt: Date.now() + this.ttlMs });
-  }
-
-  stats() {
-    return { entries: this.map.size, maxEntries: this.maxEntries, ttlMs: this.ttlMs };
-  }
-}
-
-const CACHE_MAX_ENTRIES = Math.max(10, Number(process.env.LOAD_CACHE_MAX_ENTRIES || 200));
-const CACHE_TTL_MS = Math.max(1000, Number(process.env.LOAD_CACHE_TTL_MS || 60_000));
-
-export const analysisCache = new LruCache<any>(CACHE_MAX_ENTRIES, CACHE_TTL_MS);
-
-// ---------------------------------------------------------------------------
 // Status telemetry
 // ---------------------------------------------------------------------------
 export function getLoadStatus() {
@@ -242,7 +204,7 @@ export function getLoadStatus() {
       queueCapacity: LLM_MAX_QUEUE,
     },
     breakers: [geminiBreaker.stats(), groqBreaker.stats()],
-    cache: analysisCache.stats(),
+    // cache: served by the persistent distributed store — see /api/load/status
     memory: {
       heapUsedMB: Math.round(memory.heapUsed / 1_048_576),
       heapTotalMB: Math.round(memory.heapTotal / 1_048_576),

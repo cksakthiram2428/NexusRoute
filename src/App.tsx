@@ -128,6 +128,48 @@ export default function App() {
     fetchSystemData();
   }, []);
 
+  // Capture OAuth fragment token (Google SSO callback redirects here with #oauth_token=...)
+  useEffect(() => {
+    const hash = window.location.hash || '';
+    if (hash.includes('oauth_token=')) {
+      const params = new URLSearchParams(hash.slice(1));
+      const token = params.get('oauth_token');
+      if (token) {
+        localStorage.setItem('nexusroute_session_token', token);
+        // Strip the token from the address bar so it never lingers in history
+        window.history.replaceState(null, '', window.location.pathname);
+        fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.user) {
+              setCurrentUser(data.user);
+              setActiveTab('console');
+              showToast(`Signed in as ${data.user.name} via Google`, 'success');
+            } else {
+              localStorage.removeItem('nexusroute_session_token');
+              showToast('Sign-in completed but the session could not be verified.', 'error');
+            }
+          })
+          .catch(() => {
+            localStorage.removeItem('nexusroute_session_token');
+            showToast('Authentication service is unreachable.', 'error');
+          });
+      }
+      return;
+    }
+    const err = new URLSearchParams(window.location.search).get('login_error');
+    if (err) {
+      const message =
+        err === 'google_denied'
+          ? 'Google sign-in was cancelled.'
+          : err === 'google_unconfigured'
+            ? 'Google SSO is not configured — contact your admin or use the dev fallback.'
+            : 'Google sign-in failed. Please try again.';
+      showToast(message, 'error');
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
   // Always open the app logged out — Overview is public, panels require sign-in
   useEffect(() => {
     try {

@@ -4,6 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
 import { logger, requestLogger } from './src/lib/logger';
+import { buildConsentUrl, exchangeCodeForToken, fetchGoogleUserInfo, generateOAuthState } from './src/lib/oauth';
+import { issueState, consumeState } from './src/lib/oauthState';
+import { findOrCreateOAuthUser } from './src/lib/auth';
+import { initDistributedStore, hitRateLimit, sweepExpiredRateLimits, cacheGetAnalysis, cachePutAnalysis, distributedStoreStats } from './src/lib/distributedStore';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeComplexity, applyRoutingRules, DEFAULT_ROUTING_POLICY } from './src/lib/classifier';
 import {
@@ -24,7 +28,6 @@ import {
   llmGate,
   geminiBreaker,
   groqBreaker,
-  analysisCache,
   getLoadStatus,
 } from './src/lib/loadManager';
 import { loadOrSeedRoutingRules, saveRuleToDb, deleteRuleFromDb } from './src/lib/rulesStore';
@@ -76,35 +79,43 @@ app.use(compression());
 // Correlation IDs + structured access logs
 app.use(requestLogger as any);
 
-// In-memory fixed-window rate limiting (per IP, per window)
-const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+// Fixed-window rate limiting backed by the persistent store (survives restarts).
+// Loopback sources (the dev preview proxy's health probes) bypass the strict
+// auth limiter — they are trusted local traffic; external clients are not.
+function isLoopback(ip?: string): boolean {
+  if (!ip) return false;
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('127.') || ip.startsWith('::ffff:127.');
+}
 
-function createRateLimiter({ windowMs, max, message }: { windowMs: number; max: number; message?: string }) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const key = req.ip || req.socket.remoteAddress || 'unknown';
-    const now = Date.now();
-    const bucket = rateLimitBuckets.get(key);
-    if (!bucket || now > bucket.resetAt) {
-      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+function createRateLimiter({ windowMs, max, message, bucket, exemptLoopback = false }: { windowMs: number; max: number; message?: string; bucket: string; exemptLoopback?: boolean }) {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (exemptLoopback && isLoopback(req.ip || req.socket.remoteAddress)) {
       return next();
     }
-    bucket.count += 1;
-    if (bucket.count > max) {
-      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
-      res.set('Retry-After', String(retryAfter));
-      return res.status(429).json({ error: message || 'Too many requests. Please try again later.' });
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    try {
+      const result = await hitRateLimit(key, bucket, max, windowMs);
+      if (!result.allowed) {
+        res.set('Retry-After', String(result.retryAfterSeconds));
+        return res.status(429).json({ error: message || 'Too many requests. Please try again later.' });
+      }
+      next();
+    } catch (err) {
+      logger.error({ err }, 'rate limiter failed');
+      next();
     }
-    next();
   };
 }
 
 // Broad API limiter: 600 requests per IP per 15 minutes
-const apiLimiter = createRateLimiter({ windowMs: 15 * 60_000, max: 600 });
+const apiLimiter = createRateLimiter({ windowMs: 15 * 60_000, max: 600, bucket: 'api' });
 // Strict auth limiter: 5 attempts per IP per 15 minutes
 const authLimiter = createRateLimiter({
   windowMs: 15 * 60_000,
   max: 5,
   message: 'Too many authentication attempts. Try again in 15 minutes.',
+  bucket: 'auth',
+  exemptLoopback: true, // the dev preview proxy probes the app from loopback — don't eat its budget
 });
 
 // Security headers — permissive in dev (Vite needs inline scripts/eval), strict in production
@@ -136,13 +147,8 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
 app.use('/api/auth/demo-sso', authLimiter);
 
-// Sweep expired buckets every 5 minutes to bound memory
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, bucket] of rateLimitBuckets) {
-    if (now > bucket.resetAt) rateLimitBuckets.delete(key);
-  }
-}, 5 * 60_000).unref();
+// Sweep expired buckets every 5 minutes
+setInterval(() => sweepExpiredRateLimits(), 5 * 60_000).unref();
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
@@ -331,6 +337,7 @@ function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace | null 
 
 // Initialize SQLite auth store (hashed credentials, persistent sessions)
 initAuthStore();
+initDistributedStore().then((backend) => logger.info({ backend }, 'Distributed store ready'));
 logger.info('Auth store initialized (SQLite, scrypt-hashed passwords)');
 
 // Initialize ONNX classifier on startup (non-blocking)
@@ -619,9 +626,9 @@ app.post('/api/route/analyze', requireAuth, async (req, res) => {
       ? { ...currentPolicy, ...sanitizedOverride }
       : currentPolicy;
 
-    // Short-TTL LRU cache for repeated identical routing analyses
+    // Persistent semantic cache for repeated identical routing analyses
     const cacheKey = `${cleanPrompt}|${JSON.stringify(sanitizedOverride ?? 'default')}|${useNeuralFlag ? 'neural' : 'heuristic'}`;
-    const cachedAnalysis = analysisCache.get(cacheKey);
+    const cachedAnalysis = await cacheGetAnalysis(cacheKey);
     if (cachedAnalysis) {
       return res.json({ ...cachedAnalysis, cached: true });
     }
@@ -652,7 +659,7 @@ app.post('/api/route/analyze', requireAuth, async (req, res) => {
       appliedRuleIds: evaluation.appliedRuleIds,
       sourcePipeline: evaluation.appliedRuleIds.length > 0 ? 'rule-engine' : analysis.classifier,
     };
-    analysisCache.set(cacheKey, responsePayload);
+    await cachePutAnalysis(cacheKey, responsePayload, 60_000);
     res.json(responsePayload);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Analysis failed' });
@@ -1551,6 +1558,58 @@ app.post('/api/auth/demo-sso', (_req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Demo SSO failed' });
   }
+});
+
+// Google OAuth 2.0 — real enterprise SSO (config via env; returns 501 when unconfigured)
+app.get('/api/auth/google', (req, res) => {
+  try {
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+      const wantsJson = (req.headers.accept || '').includes('application/json');
+      if (wantsJson) {
+        return res.status(501).json({
+          error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (and GOOGLE_REDIRECT_URI) in the environment.',
+        });
+      }
+      return res.redirect('/?login_error=google_unconfigured');
+    }
+    const state = generateOAuthState();
+    issueState(state);
+    return res.redirect(buildConsentUrl(state));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'OAuth init failed' });
+  }
+});
+
+app.get('/api/auth/google/callback', (req, res) => {
+  const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+  if (error) {
+    return res.redirect('/?login_error=google_denied');
+  }
+  if (!code || !state || !consumeState(state)) {
+    return res.status(400).send('Invalid or expired OAuth state — please try again.');
+  }
+
+  (async () => {
+    try {
+      const tokens = await exchangeCodeForToken(code);
+      const profile = await fetchGoogleUserInfo(tokens.accessToken);
+      const user = findOrCreateOAuthUser({
+        email: profile.email,
+        name: profile.name,
+        organization: 'External / OAuth',
+        role: 'Member',
+      });
+      const session = createSession(user.id);
+      if (!session) {
+        return res.status(500).send('Could not create a session.');
+      }
+      // Redirect the browser to the SPA with the session token in the fragment (never sent to the server in logs)
+      return res.redirect(`/#oauth_token=${encodeURIComponent(session.token)}`);
+    } catch (err: any) {
+      logger.error({ err: err?.message }, 'Google OAuth callback failed');
+      return res.redirect('/?login_error=oauth_exchange_failed');
+    }
+  })();
 });
 
 app.post('/api/auth/logout', (req, res) => {

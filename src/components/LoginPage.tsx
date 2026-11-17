@@ -81,11 +81,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleLogin = () => {
+    setAuthError(null);
+    // Real OAuth: browser navigates to /api/auth/google; the server redirects to
+    // Google's consent screen. When OAuth is not configured, returns 501 JSON.
+    // The callback lands back on '/' with ?oauth_token=... and App.tsx captures it.
+    window.location.href = '/api/auth/google';
+  };
+
+  const handleDemoSso = async () => {
     setAuthError(null);
     setIsLoading(true);
     try {
-      // Server-side demo login — the demo credentials never reach the client
       const res = await fetch('/api/auth/demo-sso', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -286,7 +293,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
             />
           </svg>
-          <span>Continue with Demo SSO (Alex Vance)</span>
+          <span>Continue with Google</span>
+        </button>
+
+        <button
+          onClick={handleDemoSso}
+          disabled={isLoading}
+          className="w-full py-2 px-4 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-[#59627E] dark:text-slate-300 font-mono text-[11px] transition-all cursor-pointer disabled:opacity-50"
+        >
+          Dev fallback: Sign in as Alex Vance (demo)
         </button>
 
         <div className="flex items-center gap-3 text-xs text-[#59627E] dark:text-slate-400">

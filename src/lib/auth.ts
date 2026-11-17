@@ -403,3 +403,23 @@ export function getPasswordHashForDebug(email: string): string | null {
     | undefined;
   return row?.passwordHash ?? null;
 }
+
+/** Find a user by email or create one from an OAuth profile. */
+export function findOrCreateOAuthUser(profile: { email: string; name?: string; organization?: string; role?: string }): AuthUser {
+  if (!db) throw new Error('Auth store not initialized');
+  const cleanEmail = profile.email.trim().toLowerCase();
+  const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(cleanEmail) as UserRow | undefined;
+  if (existing) return toPublicUser(existing);
+
+  // No reusable password — account is accessible only via OAuth until password reset is built
+  const randomPassword = randomBytes(32).toString('hex');
+  return insertUser({
+    email: cleanEmail,
+    password: randomPassword,
+    name: profile.name,
+    organization: profile.organization || 'External',
+    role: profile.role || 'Member',
+    tier: 'Growth',
+    monthlyBudgetUsd: 10000,
+  });
+}
