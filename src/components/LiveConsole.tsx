@@ -30,6 +30,7 @@ import { ExecutionTrace, ModelHealthStatus, ModelSpec, RoutingAnalysis, RoutingP
 import { formatUsd } from '../lib/pricing';
 import { ActiveTab } from './Header';
 import { TopPanelBar, BottomNextStep } from './PanelNavigation';
+import { showToast } from '../lib/toast';
 
 interface LiveConsoleProps {
   models: ModelSpec[];
@@ -248,9 +249,19 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({
         const trace: ExecutionTrace = await res.json();
         setCurrentTrace(trace);
         onExecutionComplete(trace);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 503 || res.status === 429) {
+          showToast(data.error || 'Service is busy — retry in a few seconds.', 'error');
+        } else if (res.status === 403) {
+          showToast(data.error || 'Blocked by routing governance rule.', 'error');
+        } else {
+          showToast(data.error || 'Execution failed.', 'error');
+        }
       }
     } catch (err) {
       console.error('Execution error:', err);
+      showToast('Network error reaching the routing fleet.', 'error');
     } finally {
       setIsExecuting(false);
     }

@@ -12,6 +12,14 @@ import {
   getUserForToken,
   destroySession,
 } from './src/lib/auth';
+import {
+  loadShedder,
+  llmGate,
+  geminiBreaker,
+  groqBreaker,
+  analysisCache,
+  getLoadStatus,
+} from './src/lib/loadManager';
 import { analyzeRoutingWithONNX, initONNXClassifier } from './src/lib/onnx-classifier';
 import {
   calculateCost,
@@ -97,6 +105,7 @@ app.use((_req, res, next) => {
   next();
 });
 
+app.use('/api', loadShedder);
 app.use('/api', apiLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
@@ -299,6 +308,7 @@ initONNXClassifier().then(success => {
 
 // Realistic Local Model Simulator for $0 edge tasks (or Ollama fallback)
 async function executeLocalModel(prompt: string, modelId: string = DEFAULT_LOCAL_MODEL_ID): Promise<{ text: string; latencyMs: number; tokens: { input: number; output: number } }> {
+  return llmGate.tryRun(async () => {
   const startTime = Date.now();
   const inputTokens = estimateTokenCount(prompt);
 
@@ -383,6 +393,7 @@ async function executeLocalModel(prompt: string, modelId: string = DEFAULT_LOCAL
     latencyMs: Date.now() - startTime,
     tokens: { input: inputTokens, output: outputTokens },
   };
+  });
 }
 
 // Cloud Model Execution via Gemini SDK
@@ -391,6 +402,7 @@ async function executeCloudModel(
   modelId: string,
   systemInstruction?: string
 ): Promise<{ text: string; latencyMs: number; tokens: { input: number; output: number } }> {
+  return llmGate.tryRun(async () => {
   const startTime = Date.now();
   const inputTokens = estimateTokenCount(prompt);
 
@@ -403,6 +415,17 @@ async function executeCloudModel(
       text: fallbackText,
       latencyMs: Date.now() - startTime,
       tokens: { input: inputTokens, output: outTokens },
+    };
+  }
+
+  // Circuit breaker: fail fast when the Gemini provider is unhealthy
+  if (geminiBreaker.isOpen()) {
+    console.warn('Gemini circuit breaker open — serving degraded fallback');
+    const fallbackText = `[Cloud Model ${modelId} Output — circuit open]\nProvider temporarily unavailable; response served in degraded mode.\n\n${prompt.length > 100 ? prompt.slice(0, 100) + '...' : prompt}\n\nResult: Static fallback applied.`;
+    return {
+      text: fallbackText,
+      latencyMs: Date.now() - startTime,
+      tokens: { input: inputTokens, output: estimateTokenCount(fallbackText) },
     };
   }
 
@@ -426,6 +449,7 @@ async function executeCloudModel(
 
     const text = response.text || '';
     const outputTokens = estimateTokenCount(text);
+    geminiBreaker.recordSuccess();
 
     return {
       text,
@@ -435,6 +459,7 @@ async function executeCloudModel(
   } catch (err: any) {
     // Fallback gracefully if rate limit or auth error
     console.error('Gemini call error, using smart fallback:', err?.message);
+    geminiBreaker.recordFailure();
     const fallbackText = `[Cloud Model ${modelId} Output]\nProcessed task response:\n\n${prompt.length > 100 ? prompt.slice(0, 100) + '...' : prompt}\n\nResult: Successfully processed through cloud reasoning pipeline.`;
     return {
       text: fallbackText,
@@ -442,6 +467,7 @@ async function executeCloudModel(
       tokens: { input: inputTokens, output: estimateTokenCount(fallbackText) },
     };
   }
+  });
 }
 
 // API Routes
@@ -558,6 +584,13 @@ app.post('/api/route/analyze', async (req, res) => {
       ? { ...currentPolicy, ...sanitizedOverride }
       : currentPolicy;
 
+    // Short-TTL LRU cache for repeated identical routing analyses
+    const cacheKey = `${cleanPrompt}|${JSON.stringify(sanitizedOverride ?? 'default')}|${useNeuralFlag ? 'neural' : 'heuristic'}`;
+    const cachedAnalysis = analysisCache.get(cacheKey);
+    if (cachedAnalysis) {
+      return res.json({ ...cachedAnalysis, cached: true });
+    }
+
     // Use ONNX neural classifier when available and requested
     let analysis;
     if (useNeuralFlag && onnxInitialized) {
@@ -578,12 +611,14 @@ app.post('/api/route/analyze', async (req, res) => {
       });
     }
 
-    res.json({
+    const responsePayload = {
       ...evaluation.analysis,
       classifier: analysis.classifier,
       appliedRuleIds: evaluation.appliedRuleIds,
       sourcePipeline: evaluation.appliedRuleIds.length > 0 ? 'rule-engine' : analysis.classifier,
-    });
+    };
+    analysisCache.set(cacheKey, responsePayload);
+    res.json(responsePayload);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Analysis failed' });
   }
@@ -754,6 +789,12 @@ app.post('/api/route/execute', async (req, res) => {
 
     res.json(trace);
   } catch (error: any) {
+    if (error?.code === 'LLM_BUSY' || error?.name === 'GateFullError') {
+      return res.status(503).json({
+        error: 'Model fleet is saturated. Please retry in a few seconds.',
+        code: 'LLM_BUSY',
+      });
+    }
     console.error('Execution error:', error);
     res.status(500).json({ error: error.message || 'Execution failed' });
   }
@@ -1292,6 +1333,11 @@ app.delete('/api/config/rules/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+// 6e. Load Manager — runtime saturation & health telemetry
+app.get('/api/load/status', (_req, res) => {
+  res.json(getLoadStatus());
+});
+
 // 6e. Authentication (SQLite-backed store, scrypt-hashed passwords, hashed session tokens)
 function bearerToken(req: express.Request): string | null {
   const header = req.headers.authorization || '';
@@ -1428,6 +1474,10 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
   // Try Groq candidate models in sequence (only when a key is configured)
   if (GROQ_API_KEY) {
   for (const modelCandidate of GROQ_CANDIDATE_MODELS) {
+    if (groqBreaker.isOpen()) {
+      console.warn('Groq circuit breaker open — skipping Groq candidates');
+      break;
+    }
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
@@ -1453,6 +1503,7 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
         const groqData = (await groqRes.json()) as any;
         const reply = groqData.choices?.[0]?.message?.content;
         if (reply) {
+          groqBreaker.recordSuccess();
           const usage = groqData.usage || { prompt_tokens: 100, completion_tokens: 150, total_tokens: 250 };
           return res.json({
             reply,
@@ -1466,8 +1517,12 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
             provider: 'Groq (LPUs / Ultra-Fast Inference)',
           });
         }
+        groqBreaker.recordFailure();
+      } else {
+        groqBreaker.recordFailure();
       }
     } catch {
+      groqBreaker.recordFailure();
       // Continue to next candidate without breaking
     }
   }
