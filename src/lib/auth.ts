@@ -170,6 +170,22 @@ export function initAuthStore(): void {
       expiresAt TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expiresAt);
+    CREATE TABLE IF NOT EXISTS user_spend (
+      userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      period TEXT NOT NULL,
+      totalUsd REAL NOT NULL DEFAULT 0,
+      requestCount INTEGER NOT NULL DEFAULT 0,
+      updatedAt TEXT NOT NULL,
+      PRIMARY KEY (userId, period)
+    );
+    CREATE TABLE IF NOT EXISTS rule_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ruleId TEXT,
+      action TEXT NOT NULL,
+      actor TEXT,
+      summary TEXT,
+      at TEXT NOT NULL
+    );
   `);
 
   // Seed the two demo workspace accounts (passwords configurable via DEMO_PASSWORD env)
@@ -285,6 +301,99 @@ export function getUserForToken(token: string): { user: AuthUser } | null {
 export function destroySession(token: string): void {
   if (!db || !token) return;
   db.prepare('DELETE FROM sessions WHERE tokenHash = ?').run(sha256(token));
+}
+
+function currentPeriod(): string {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Record spend against the caller's current monthly period. */
+export function addMonthlySpend(userId: string, amountUsd: number): void {
+  if (!db || !Number.isFinite(amountUsd) || amountUsd <= 0) return;
+  const period = currentPeriod();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO user_spend (userId, period, totalUsd, requestCount, updatedAt)
+    VALUES (?, ?, ?, 1, ?)
+    ON CONFLICT(userId, period) DO UPDATE SET
+      totalUsd = totalUsd + excluded.totalUsd,
+      requestCount = requestCount + 1,
+      updatedAt = excluded.updatedAt
+  `).run(userId, period, amountUsd, now);
+}
+
+export interface MonthlyBudgetStatus {
+  userId: string;
+  period: string;
+  spendUsd: number;
+  budgetUsd: number;
+  remainingUsd: number;
+  requestCount: number;
+  exceeded: boolean;
+}
+
+export function getMonthlyBudgetStatus(userId: string, budgetUsd: number): MonthlyBudgetStatus {
+  const period = currentPeriod();
+  const spendRow = db
+    ?.prepare('SELECT totalUsd, requestCount FROM user_spend WHERE userId = ? AND period = ?')
+    .get(userId, period) as
+    | { totalUsd: number; requestCount: number }
+    | undefined;
+  const spendUsd = spendRow?.totalUsd ?? 0;
+  const requestCount = spendRow?.requestCount ?? 0;
+  return {
+    userId,
+    period,
+    spendUsd,
+    budgetUsd,
+    remainingUsd: Math.max(0, budgetUsd - spendUsd),
+    requestCount,
+    exceeded: spendUsd >= budgetUsd,
+  };
+}
+
+/** Throw if the caller has exhausted their monthly budget. */
+export function enforceMonthlyBudget(userId: string, budgetUsd: number): MonthlyBudgetStatus {
+  const status = getMonthlyBudgetStatus(userId, budgetUsd);
+  if (status.exceeded) {
+    const err = new Error(
+      `Monthly budget exhausted ($${budgetUsd.toFixed(2)}). Ask an admin to raise your limit in Policy Controls.`
+    );
+    (err as any).code = 'BUDGET_EXHAUSTED';
+    throw err;
+  }
+  return status;
+}
+
+/** Write an audit event for a governance rule change. */
+export function logRuleEvent(ruleId: string | null, action: string, actor: string, summary: string): void {
+  if (!db) return;
+  try {
+    db.prepare('INSERT INTO rule_events (ruleId, action, actor, summary, at) VALUES (?, ?, ?, ?, ?)').run(
+      ruleId,
+      action,
+      actor,
+      summary,
+      new Date().toISOString()
+    );
+  } catch (err) {
+    console.error('Failed to write rule audit event:', err);
+  }
+}
+
+export interface RuleAuditEvent {
+  id: number;
+  ruleId: string | null;
+  action: string;
+  actor: string | null;
+  summary: string | null;
+  at: string;
+}
+
+export function listRuleEvents(limit = 100): RuleAuditEvent[] {
+  if (!db) return [];
+  return db.prepare('SELECT * FROM rule_events ORDER BY at DESC LIMIT ?').all(limit) as unknown as RuleAuditEvent[];
 }
 
 export function getPasswordHashForDebug(email: string): string | null {

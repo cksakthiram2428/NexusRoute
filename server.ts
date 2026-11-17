@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
+import { logger, requestLogger } from './src/lib/logger';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeComplexity, applyRoutingRules, DEFAULT_ROUTING_POLICY } from './src/lib/classifier';
 import {
@@ -12,6 +13,11 @@ import {
   createSession,
   getUserForToken,
   destroySession,
+  enforceMonthlyBudget,
+  addMonthlySpend,
+  getMonthlyBudgetStatus,
+  logRuleEvent,
+  listRuleEvents,
 } from './src/lib/auth';
 import {
   loadShedder,
@@ -66,6 +72,9 @@ app.use(express.json({ limit: '1mb' }));
 
 // gzip/deflate every response
 app.use(compression());
+
+// Correlation IDs + structured access logs
+app.use(requestLogger as any);
 
 // In-memory fixed-window rate limiting (per IP, per window)
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -322,14 +331,14 @@ function buildSeedTrace(prompt: string, timestamp: Date): ExecutionTrace | null 
 
 // Initialize SQLite auth store (hashed credentials, persistent sessions)
 initAuthStore();
-console.log('🔐 Auth store initialized (SQLite, scrypt-hashed passwords)');
+logger.info('Auth store initialized (SQLite, scrypt-hashed passwords)');
 
 // Initialize ONNX classifier on startup (non-blocking)
 initONNXClassifier().then(success => {
   onnxInitialized = success;
-  console.log(`ONNX Classifier: ${success ? '✅ Initialized' : '⚠️ Using heuristic fallback'}`);
+  logger.info(`ONNX Classifier: ${success ? 'initialized' : 'heuristic fallback'}`);
 }).catch(err => {
-  console.warn('ONNX initialization failed, using heuristic classifier:', err.message);
+  logger.warn({ err: err.message }, 'ONNX initialization failed, using heuristic classifier');
 });
 
 // Realistic Local Model Simulator for $0 edge tasks (or Ollama fallback)
@@ -446,7 +455,7 @@ async function executeCloudModel(
 
   // Circuit breaker: fail fast when the Gemini provider is unhealthy
   if (geminiBreaker.isOpen()) {
-    console.warn('Gemini circuit breaker open — serving degraded fallback');
+    logger.warn('Gemini circuit breaker open — serving degraded fallback');
     const fallbackText = `[Cloud Model ${modelId} Output — circuit open]\nProvider temporarily unavailable; response served in degraded mode.\n\n${prompt.length > 100 ? prompt.slice(0, 100) + '...' : prompt}\n\nResult: Static fallback applied.`;
     return {
       text: fallbackText,
@@ -484,7 +493,7 @@ async function executeCloudModel(
     };
   } catch (err: any) {
     // Fallback gracefully if rate limit or auth error
-    console.error('Gemini call error, using smart fallback:', err?.message);
+    logger.warn({ err: err?.message }, 'Gemini call failed; using smart fallback');
     geminiBreaker.recordFailure();
     const fallbackText = `[Cloud Model ${modelId} Output]\nProcessed task response:\n\n${prompt.length > 100 ? prompt.slice(0, 100) + '...' : prompt}\n\nResult: Successfully processed through cloud reasoning pipeline.`;
     return {
@@ -698,6 +707,32 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
     const isOverridden = Boolean(manualOverrideModelId && manualOverrideModelId !== analysis.recommendedModelId);
     const targetModelId = manualOverrideModelId || analysis.recommendedModelId;
 
+    // Per-user monthly budget gate — checked before any model call happens
+    const authUser = (req as any).authUser as
+      | { id?: string; email?: string; monthlyBudgetUsd?: number }
+      | undefined;
+    if (authUser?.id && typeof authUser.monthlyBudgetUsd === 'number') {
+      const status = getMonthlyBudgetStatus(authUser.id, authUser.monthlyBudgetUsd);
+      if (status.exceeded) {
+        return res.status(402).json({
+          error: `Monthly budget exhausted ($${authUser.monthlyBudgetUsd.toFixed(2)}). Ask an admin to raise your limit.`,
+          code: 'BUDGET_EXHAUSTED',
+          spendUsd: status.spendUsd,
+          budgetUsd: status.budgetUsd,
+        });
+      }
+      const projectedCost = analysis.estimatedCost ?? 0;
+      if (!isOverridden && status.spendUsd + projectedCost > status.budgetUsd) {
+        return res.status(402).json({
+          error: `This request would exceed your monthly budget ($${status.budgetUsd.toFixed(2)}). Spend so far: $${status.spendUsd.toFixed(4)}; est. cost: $${projectedCost.toFixed(6)}.`,
+          code: 'BUDGET_WOULD_EXCEED',
+          spendUsd: status.spendUsd,
+          budgetUsd: status.budgetUsd,
+          projectedCostUsd: projectedCost,
+        });
+      }
+    }
+
     const startTime = Date.now();
 
     // Check if we should execute as a decomposed multi-part pipeline
@@ -763,6 +798,7 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
 
       traceHistory.unshift(trace);
       insertTrace(trace);
+      if ((req as any).authUser?.id) addMonthlySpend((req as any).authUser.id, trace.totalCost);
       while (traceHistory.length > 300) traceHistory.pop();
 
       return res.json(trace);
@@ -813,6 +849,7 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
 
     traceHistory.unshift(trace);
     insertTrace(trace);
+    if ((req as any).authUser?.id) addMonthlySpend((req as any).authUser.id, trace.totalCost);
     if (traceHistory.length > 50) traceHistory.pop();
 
     res.json(trace);
@@ -823,7 +860,7 @@ app.post('/api/route/execute', requireAuth, async (req, res) => {
         code: 'LLM_BUSY',
       });
     }
-    console.error('Execution error:', error);
+    logger.error({ err: error?.message }, 'Execution error');
     res.status(500).json({ error: error.message || 'Execution failed' });
   }
 });
@@ -1129,7 +1166,7 @@ app.post('/api/benchmark/ab-compare', async (req, res) => {
 
     res.json(comparisonResult);
   } catch (error: any) {
-    console.error('A/B Compare error:', error);
+    logger.error({ err: error?.message }, 'A/B Compare error');
     res.status(500).json({ error: error.message || 'A/B Comparison failed' });
   }
 });
@@ -1270,6 +1307,8 @@ app.get('/api/config/rules', (_req, res) => {
 
 app.post('/api/config/rules', requireAuth, (req, res) => {
   try {
+    const authUser = (req as any).authUser as { email?: string; id?: string } | undefined;
+    const actorEmail = authUser?.email || authUser?.id || 'unknown';
     const { name, description, conditions, actions, priority, enabled } = req.body;
     const cleanName = asValidString(name, 120);
     if (!cleanName) {
@@ -1302,10 +1341,11 @@ app.post('/api/config/rules', requireAuth, (req, res) => {
       actions: cleanActions,
       createdAt: now,
       updatedAt: now,
-      createdBy: 'ops-admin',
+      createdBy: actorEmail,
     };
     routingRules.push(rule);
     saveRuleToDb(rule);
+    logRuleEvent(rule.id, 'create', actorEmail, `Created rule "${rule.name}"`);
     res.status(201).json({ success: true, rule });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to create rule' });
@@ -1318,6 +1358,7 @@ app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
     if (!rule) {
       return res.status(404).json({ error: 'Routing rule not found.' });
     }
+    const actorEmail = ((req as any).authUser as { email?: string } | undefined)?.email || 'unknown';
     const { name, description, enabled, priority, conditions, actions } = req.body;
     if (name !== undefined) {
       const cleanName = asValidString(name, 120);
@@ -1347,6 +1388,7 @@ app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
     }
     rule.updatedAt = new Date().toISOString();
     saveRuleToDb(rule);
+    logRuleEvent(rule.id, 'update', actorEmail, `Updated rule "${rule.name}"`);
     res.json({ success: true, rule });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update rule' });
@@ -1354,13 +1396,21 @@ app.patch('/api/config/rules/:id', requireAuth, (req, res) => {
 });
 
 app.delete('/api/config/rules/:id', requireAuth, (req, res) => {
+  const actorEmail = ((req as any).authUser as { email?: string } | undefined)?.email || 'unknown';
+  const victim = routingRules.find((r) => r.id === req.params.id);
   const before = routingRules.length;
   routingRules = routingRules.filter((r) => r.id !== req.params.id);
   deleteRuleFromDb(req.params.id);
   if (routingRules.length === before) {
     return res.status(404).json({ error: 'Routing rule not found.' });
   }
+  logRuleEvent(victim?.id ?? req.params.id, 'delete', actorEmail, `Deleted rule "${victim?.name || req.params.id}"`);
   res.json({ success: true });
+});
+
+// 6d-1. Governance Rule Audit History (requires auth — contains operator actions)
+app.get('/api/config/rules/history', requireAuth, (_req, res) => {
+  res.json({ events: listRuleEvents(100) });
 });
 
 // 6e. Load Manager — runtime saturation & health telemetry
@@ -1474,7 +1524,8 @@ app.get('/api/auth/me', (req, res) => {
   if (!result) {
     return res.status(401).json({ error: 'Not authenticated.' });
   }
-  res.json({ user: result.user });
+  const budget = getMonthlyBudgetStatus(result.user.id, result.user.monthlyBudgetUsd);
+  res.json({ user: result.user, monthlyBudget: budget });
 });
 
 // Demo SSO — server-side login for the seeded demo persona. Disabled in
@@ -1547,7 +1598,7 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
   if (GROQ_API_KEY) {
   for (const modelCandidate of GROQ_CANDIDATE_MODELS) {
     if (groqBreaker.isOpen()) {
-      console.warn('Groq circuit breaker open — skipping Groq candidates');
+      logger.warn('Groq circuit breaker open — skipping Groq candidates');
       break;
     }
     try {
@@ -1625,7 +1676,7 @@ Help the user analyze complex prompts, architect routing rules, evaluate cost vs
         });
       }
     } catch (geminiErr: any) {
-      console.warn('Gemini fallback notice:', geminiErr?.message);
+      logger.warn({ err: geminiErr?.message }, 'Gemini fallback notice');
     }
   }
 
@@ -1763,7 +1814,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`NexusRoute Server running on http://0.0.0.0:${PORT}`);
+    logger.info({ port: PORT }, 'NexusRoute server listening');
   });
 }
 
