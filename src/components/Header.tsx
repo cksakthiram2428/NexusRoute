@@ -81,7 +81,7 @@ export const Header: React.FC<HeaderProps> = ({
     { id: 'decomposer', label: 'Multi-Part Splitter' },
     { id: 'benchmarks', label: 'A/B Arena' },
     { id: 'policy', label: 'Policy Controls' },
-    { id: 'analytics', label: 'Savings Analytics' },
+    { id: 'analytics', label: 'Transparency & Audit' },
     { id: 'chat', label: 'Copilot' },
     { id: 'features', label: '20 Features', badge: '20/20' },
   ];

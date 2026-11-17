@@ -3,6 +3,9 @@ import {
   ModelTier,
   RoutingAnalysis,
   RoutingPolicyConfig,
+  RoutingRule,
+  RuleCondition,
+  RuleEvaluationResult,
   SubTask,
   TaskCategory,
 } from '../types/router';
@@ -238,6 +241,177 @@ export function analyzeComplexity(
     baselineFlagshipCost,
     projectedSavingsPercent: Math.max(0, projectedSavingsPercent),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Governance Rules Engine
+// ---------------------------------------------------------------------------
+
+interface RuleEvaluationContext {
+  prompt: string;
+  category: TaskCategory;
+  complexity: number;
+  tokens: number;
+  tier: ModelTier;
+}
+
+const RULE_TIER_TARGETS: Record<string, ModelTier> = {
+  force_local: 'local',
+  force_cloud_lite: 'cloud_lite',
+  force_cloud_standard: 'cloud_standard',
+  force_flagship: 'cloud_flagship',
+};
+
+function tierOfModel(modelId: string): ModelTier {
+  const spec = SUPPORTED_MODELS.find((m) => m.id === modelId);
+  return spec ? spec.tier : 'cloud_standard';
+}
+
+export function evaluateRuleCondition(condition: RuleCondition, ctx: RuleEvaluationContext): boolean {
+  let fieldValue: string | number;
+  switch (condition.field) {
+    case 'prompt_contains':
+      fieldValue = ctx.prompt;
+      break;
+    case 'category':
+      fieldValue = ctx.category;
+      break;
+    case 'complexity':
+      fieldValue = ctx.complexity;
+      break;
+    case 'token_count':
+      fieldValue = ctx.tokens;
+      break;
+    case 'model_tier':
+      fieldValue = ctx.tier;
+      break;
+    default:
+      return false;
+  }
+
+  switch (condition.operator) {
+    case 'equals':
+      return String(fieldValue).toLowerCase() === String(condition.value).toLowerCase();
+    case 'contains':
+      return String(fieldValue).toLowerCase().includes(String(condition.value).toLowerCase());
+    case 'gte':
+      return Number(fieldValue) >= Number(condition.value);
+    case 'lte':
+      return Number(fieldValue) <= Number(condition.value);
+    case 'gt':
+      return Number(fieldValue) > Number(condition.value);
+    case 'lt':
+      return Number(fieldValue) < Number(condition.value);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Applies enabled governance rules (priority order) to a routing analysis.
+ * Rules can force a tier, boost the complexity score, or block the prompt.
+ */
+export function applyRoutingRules(
+  analysis: RoutingAnalysis,
+  prompt: string,
+  rules: RoutingRule[],
+  policy: RoutingPolicyConfig = DEFAULT_ROUTING_POLICY
+): RuleEvaluationResult {
+  const working: RoutingAnalysis = {
+    ...analysis,
+    complexitySignals: [...analysis.complexitySignals],
+  };
+  const appliedRuleIds: string[] = [];
+  let blocked = false;
+  let blockReason: string | undefined;
+
+  const ctx: RuleEvaluationContext = {
+    prompt,
+    category: working.detectedCategory,
+    complexity: working.overallComplexity,
+    tokens: working.estimatedInputTokens,
+    tier: working.recommendedModelTier,
+  };
+
+  const activeRules = [...rules]
+    .filter((rule) => rule.enabled)
+    .sort((a, b) => a.priority - b.priority);
+
+  for (const rule of activeRules) {
+    if (blocked) break;
+
+    const allConditionsMet =
+      rule.conditions.length > 0 && rule.conditions.every((condition) => evaluateRuleCondition(condition, ctx));
+    if (!allConditionsMet) continue;
+
+    appliedRuleIds.push(rule.id);
+
+    for (const action of rule.actions) {
+      switch (action.type) {
+        case 'force_local':
+        case 'force_cloud_lite':
+        case 'force_cloud_standard':
+        case 'force_flagship': {
+          const targetModelId = action.targetModelId;
+          const resolvedModelId = targetModelId && SUPPORTED_MODELS.some((m) => m.id === targetModelId)
+            ? targetModelId
+            : undefined;
+          working.recommendedModelTier = resolvedModelId
+            ? tierOfModel(resolvedModelId)
+            : RULE_TIER_TARGETS[action.type];
+          working.recommendedModelId =
+            resolvedModelId ||
+            (working.recommendedModelTier === 'local'
+              ? DEFAULT_LOCAL_MODEL_ID
+              : working.recommendedModelTier === 'cloud_lite'
+                ? DEFAULT_CLOUD_LITE_MODEL_ID
+                : working.recommendedModelTier === 'cloud_standard'
+                  ? DEFAULT_CLOUD_STANDARD_MODEL_ID
+                  : FLAGSHIP_MODEL_ID);
+          working.routingPolicyMatched = `Rule: ${rule.name}`;
+          working.routingRationale = `${working.routingRationale}\n[Rule Engine] "${rule.name}" enforced: ${action.reason}`;
+          break;
+        }
+
+        case 'boost_signal': {
+          const weight = action.signalWeight ?? 10;
+          working.overallComplexity = Math.max(5, Math.min(98, working.overallComplexity + weight));
+          working.complexitySignals.push({
+            name: action.signalName || `Governance Signal: ${rule.name}`,
+            weight,
+            description: action.reason,
+            triggered: true,
+          });
+          // Re-derive the tier from policy thresholds after the score shift
+          if (working.overallComplexity <= policy.localThreshold) {
+            working.recommendedModelTier = 'local';
+            working.recommendedModelId = DEFAULT_LOCAL_MODEL_ID;
+          } else if (working.overallComplexity <= policy.cloudLiteThreshold) {
+            working.recommendedModelTier = 'cloud_lite';
+            working.recommendedModelId = DEFAULT_CLOUD_LITE_MODEL_ID;
+          } else {
+            working.recommendedModelTier = 'cloud_flagship';
+            working.recommendedModelId = FLAGSHIP_MODEL_ID;
+          }
+          working.routingPolicyMatched = `Rule: ${rule.name}`;
+          working.routingRationale = `${working.routingRationale}\n[Rule Engine] "${rule.name}" adjusted complexity to ${working.overallComplexity}: ${action.reason}`;
+          break;
+        }
+
+        case 'block_prompt':
+          blocked = true;
+          blockReason = action.reason;
+          working.routingRationale = `${working.routingRationale}\n[Rule Engine] BLOCKED by "${rule.name}": ${action.reason}`;
+          break;
+      }
+    }
+
+    // Refresh context so subsequent rules evaluate against mutated state
+    ctx.complexity = working.overallComplexity;
+    ctx.tier = working.recommendedModelTier;
+  }
+
+  return { analysis: working, blocked, blockReason, appliedRuleIds };
 }
 
 /**

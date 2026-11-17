@@ -14,6 +14,9 @@ import {
   Cpu,
   Layers,
   Zap,
+  Eye,
+  EyeOff,
+  AlertTriangle,
 } from 'lucide-react';
 import { ActiveTab } from './Header';
 import { TopPanelBar, BottomNextStep } from './PanelNavigation';
@@ -30,7 +33,7 @@ export interface UserSession {
 
 interface LoginPageProps {
   currentUser: UserSession | null;
-  onLogin: (session: UserSession) => void;
+  onLogin: (session: UserSession, token: string) => void;
   onLogout: () => void;
   onNavigate: (tab: ActiveTab) => void;
 }
@@ -43,43 +46,61 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 }) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('lead.engineer@acme-enterprise.io');
-  const [password, setPassword] = useState('••••••••••••');
+  const [password, setPassword] = useState('demo1234');
+  const [authError, setAuthError] = useState<string | null>(null);
   const [org, setOrg] = useState('Acme Global Enterprises');
   const [role, setRole] = useState('Staff ML Infrastructure Architect');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
     setIsLoading(true);
-    setTimeout(() => {
-      onLogin({
-        email,
-        name: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-        organization: org,
-        role: role,
-        apiKey: `nx_live_${Math.random().toString(36).substr(2, 9)}_${Date.now().toString(36)}`,
-        tier: 'Enterprise Scale',
-        monthlyBudgetUsd: 15000,
+    try {
+      const endpoint = isSignUp ? '/api/auth/signup' : '/api/auth/login';
+      const body = isSignUp
+        ? { email, password, organization: org, role }
+        : { email, password };
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAuthError(data.error || 'Authentication failed. Please try again.');
+        return;
+      }
+      onLogin(data.user, data.token);
+    } catch {
+      setAuthError('Authentication service is unreachable. Is the server running?');
+    } finally {
       setIsLoading(false);
-    }, 600);
+    }
   };
 
-  const handleGoogleLogin = () => {
+  const handleGoogleLogin = async () => {
+    setAuthError(null);
     setIsLoading(true);
-    setTimeout(() => {
-      onLogin({
-        email: 'alex.vance@cloud-vertex.ai',
-        name: 'Alex Vance',
-        organization: 'Vertex AI Infrastructure Lab',
-        role: 'Director of AI FinOps',
-        apiKey: `nx_live_gsuite_${Math.random().toString(36).substr(2, 8)}`,
-        tier: 'Enterprise Scale',
-        monthlyBudgetUsd: 25000,
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'alex.vance@cloud-vertex.ai', password: 'demo1234' }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAuthError(data.error || 'SSO sign-in failed.');
+        return;
+      }
+      onLogin(data.user, data.token);
+    } catch {
+      setAuthError('Authentication service is unreachable. Is the server running?');
+    } finally {
       setIsLoading(false);
-    }, 500);
+    }
   };
 
   // If already logged in, show User Account & API Key Management view
@@ -268,7 +289,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
             />
           </svg>
-          <span>Continue with Google Enterprise</span>
+          <span>Continue with Demo SSO (Alex Vance)</span>
         </button>
 
         <div className="flex items-center gap-3 text-xs text-[#59627E] dark:text-slate-400">
@@ -299,12 +320,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <div className="relative">
               <Lock className="w-4 h-4 text-[#59627E] dark:text-slate-400 absolute left-3 top-2.5" />
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#E6EDF6]/40 dark:bg-slate-800/60 border border-[#CBD8E8] dark:border-slate-700 text-[#020C21] dark:text-slate-100 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:border-[#0F1B31] dark:focus:border-sky-500 font-mono"
+                className="w-full pl-9 pr-9 py-2 rounded-xl bg-[#E6EDF6]/40 dark:bg-slate-800/60 border border-[#CBD8E8] dark:border-slate-700 text-[#020C21] dark:text-slate-100 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:border-[#0F1B31] dark:focus:border-sky-500 font-mono"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-2.5 top-2 p-0.5 rounded-md text-[#59627E] dark:text-slate-400 hover:text-[#020C21] dark:hover:text-slate-100 hover:bg-[#CBD8E8]/40 dark:hover:bg-slate-700/60 transition-colors cursor-pointer"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                title={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
           </div>
 
@@ -338,6 +368,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </div>
               </div>
             </>
+          )}
+
+          {authError && (
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-300 text-xs font-sans flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          {!isSignUp && (
+            <p className="text-[10px] text-center text-[#59627E] dark:text-slate-400 font-mono">
+              Demo account: <code className="text-[#020C21] dark:text-slate-200">lead.engineer@acme-enterprise.io</code> / password{' '}
+              <code className="text-[#020C21] dark:text-slate-200">demo1234</code>
+            </p>
           )}
 
           <button

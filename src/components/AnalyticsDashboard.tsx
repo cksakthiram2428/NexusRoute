@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { jsPDF } from 'jspdf';
 import {
   TrendingDown,
@@ -38,10 +38,13 @@ import { ExecutionTrace, SystemMetrics } from '../types/router';
 import { formatUsd } from '../lib/pricing';
 import { ActiveTab } from './Header';
 import { TopPanelBar, BottomNextStep } from './PanelNavigation';
+import { TraceInspectorModal } from './TraceInspectorModal';
+import { RoutingRulesPanel } from './RoutingRulesPanel';
+import { SkeletonTable } from './Skeleton';
+import { SUPPORTED_MODELS } from '../lib/pricing';
 
 interface AnalyticsDashboardProps {
   metrics: SystemMetrics | null;
-  onSelectTrace: (trace: ExecutionTrace) => void;
   onRefresh: () => void;
   onNavigate?: (tab: ActiveTab) => void;
 }
@@ -138,7 +141,6 @@ const CustomChartTooltip = ({ active, payload }: any) => {
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   metrics,
-  onSelectTrace,
   onRefresh,
   onNavigate,
 }) => {
@@ -147,9 +149,44 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const [timeRange, setTimeRange] = useState<7 | 14 | 30>(14);
   const [metricFocus, setMetricFocus] = useState<'cumulative' | 'daily' | 'spend_comparison'>('cumulative');
 
-  const trendData = useMemo(() => generateDailyTrendData(timeRange), [timeRange]);
+  // Live audit ledger state (transparency dashboard)
+  const [traces, setTraces] = useState<ExecutionTrace[]>([]);
+  const [ledgerLoading, setLedgerLoading] = useState(true);
+  const [selectedTrace, setSelectedTrace] = useState<ExecutionTrace | null>(null);
 
-  const traces = metrics?.recentTraces || [];
+  const fetchTraces = useCallback(async () => {
+    try {
+      const res = await fetch('/api/traces?limit=100');
+      if (res.ok) {
+        const data = await res.json();
+        setTraces(data.traces || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch audit traces:', err);
+    } finally {
+      setLedgerLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTraces();
+  }, [fetchTraces]);
+
+  const handleOverride = async (traceId: string, modelId: string, reason: string) => {
+    const res = await fetch(`/api/traces/${traceId}/override`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId, reason, userName: 'ops-admin' }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Override request failed.');
+    }
+    await fetchTraces();
+    onRefresh();
+  };
+
+  const trendData = useMemo(() => generateDailyTrendData(timeRange), [timeRange]);
 
   const filteredTraces = traces.filter((t) => {
     const matchesSearch =
@@ -696,6 +733,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                 <th className="py-3 px-3.5 font-semibold">Prompt Snippet</th>
                 <th className="py-3 px-3.5 font-semibold">Score</th>
                 <th className="py-3 px-3.5 font-semibold">Engine Used</th>
+                <th className="py-3 px-3.5 font-semibold">Pipeline</th>
                 <th className="py-3 px-3.5 font-semibold">Why (Routing Rationale)</th>
                 <th className="py-3 px-3.5 font-semibold text-right">Latency</th>
                 <th className="py-3 px-3.5 font-semibold text-right">Cost</th>
@@ -703,18 +741,24 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E6EDF6] dark:divide-slate-800 bg-white/40 dark:bg-slate-900/40">
-              {filteredTraces.length === 0 ? (
+              {ledgerLoading ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-[#59627E] dark:text-slate-400 italic">
-                    No execution traces recorded yet. Execute a query in the Live Router Console to
-                    generate audit logs.
+                  <td colSpan={8} className="p-3">
+                    <SkeletonTable rows={5} columns={8} />
+                  </td>
+                </tr>
+              ) : filteredTraces.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center text-[#59627E] dark:text-slate-400 italic">
+                    No execution traces match your filters. Execute a query in the Live Router
+                    Console or clear the search to generate audit logs.
                   </td>
                 </tr>
               ) : (
                 filteredTraces.map((trace) => (
                   <tr
                     key={trace.id}
-                    onClick={() => onSelectTrace(trace)}
+                    onClick={() => setSelectedTrace(trace)}
                     className="hover:bg-[#E6EDF6]/40 dark:hover:bg-slate-800/60 transition-colors cursor-pointer group"
                   >
                     <td className="py-3 px-3.5 max-w-[220px]">
@@ -737,6 +781,17 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                       <span className="px-2.5 py-0.5 rounded-full text-[11px] bg-[#E6EDF6] dark:bg-slate-800 border border-[#CBD8E8] dark:border-slate-700 text-[#0F182F] dark:text-slate-200">
                         {trace.selectedModelId}
                       </span>
+                    </td>
+
+                    <td className="py-3 px-3.5">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800/50 text-indigo-700 dark:text-indigo-300">
+                        {trace.sourcePipeline || 'heuristic'}
+                      </span>
+                      {trace.isOverridden && (
+                        <span className="ml-1.5 text-[9px] text-violet-600 dark:text-violet-400 font-mono font-bold">
+                          OVERRIDDEN
+                        </span>
+                      )}
                     </td>
 
                     <td className="py-3 px-3.5 max-w-[280px]">
@@ -765,6 +820,19 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Governance Rules Engine */}
+      <RoutingRulesPanel onChanged={fetchTraces} />
+
+      {/* Trace inspector modal (per-request override + reasoning) */}
+      {selectedTrace && (
+        <TraceInspectorModal
+          trace={selectedTrace}
+          models={SUPPORTED_MODELS}
+          onClose={() => setSelectedTrace(null)}
+          onOverride={handleOverride}
+        />
+      )}
 
       {/* Bottom Continuous Step Flow Navigation */}
       {onNavigate && <BottomNextStep currentTab="analytics" onNavigate={onNavigate} />}

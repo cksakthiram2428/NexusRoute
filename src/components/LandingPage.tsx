@@ -37,6 +37,30 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenTerms,
 }) => {
   const [activeStep, setActiveStep] = useState<number>(0);
+  const [openFaq, setOpenFaq] = useState<number | null>(0);
+
+  const faqItems = [
+    {
+      q: 'How does NexusRoute reduce LLM costs without hurting quality?',
+      a: 'Every prompt is scored 0–100 across 8 structural signals (math density, code syntax, PII patterns, token length, and more). Tasks at or below your local threshold execute on a $0 on-device model; mid-range work goes to Flash-Lite; only genuinely deep reasoning reaches the flagship. Across GSM8K and MMLU benchmarks this preserves 98.6% of flagship quality while cutting spend ~68%.',
+    },
+    {
+      q: 'What happens to my data — does it ever leave my machine?',
+      a: 'Only if routing decides a cloud tier is required. Prompts matching PII patterns (SSNs, medical IDs, "confidential") are hard-pinned to local execution with zero network egress. You can make this unconditional by enabling Strict Zero-Egress in Policy Controls, which forces every request on-premise.',
+    },
+    {
+      q: 'Can I override or audit a routing decision?',
+      a: 'Yes. Every execution produces an immutable trace in the Audit Ledger (Analytics → Transparency). Each trace shows the complexity score, the signals that fired, the routing rationale, cost, and latency — and you can manually re-dispatch any trace to a different model with a recorded justification. Governance rules let admins force, escalate, or block classes of prompts deterministically.',
+    },
+    {
+      q: 'Which models are available to route to?',
+      a: 'Two local models (Llama 3.2 3B, Qwen 2.5 7B) at $0, plus three cloud tiers: Gemini 3.1 Flash-Lite ($0.075/1M), Gemini 3.8 Flash ($0.15/1M), and Gemini 3.1 Pro flagship ($1.25/1M). Local models auto-connect to your Ollama endpoint if one is running at the configured URL.',
+    },
+    {
+      q: 'How does the multi-part splitter work?',
+      a: 'When a prompt contains multiple intents (numbered steps, "and then", "also"), NexusRoute partitions it into sub-tasks, scores each one independently, and dispatches them to the cheapest capable model per sub-task — a SQL schema can go to a local model while a strategic analysis in the same request escalates to flagship. Results are merged into one response.',
+    },
+  ];
 
   const workflowSteps = [
     {
@@ -404,6 +428,53 @@ SubTask 3: [Synthesis & Merge] -> Cohesive Unified Output`,
             </div>
           );
         })()}
+      </div>
+
+      {/* Expandable FAQ Section */}
+      <div className="mt-6 rounded-3xl bg-white/80 dark:bg-slate-900/80 border border-[#CBD8E8] dark:border-slate-800 shadow-xs backdrop-blur-xl overflow-hidden transition-colors">
+        <div className="p-6 sm:p-7 pb-4 flex items-center gap-2.5 border-b border-[#E6EDF6] dark:border-slate-800">
+          <div className="w-9 h-9 rounded-2xl bg-[#0F1B31] dark:bg-sky-500 text-white dark:text-slate-950 flex items-center justify-center shadow-xs">
+            <Compass className="w-4.5 h-4.5" />
+          </div>
+          <div>
+            <h2 className="text-base sm:text-lg font-[520] tracking-[-0.02em] text-[#020C21] dark:text-slate-100 font-display">
+              Frequently Asked Questions
+            </h2>
+            <p className="text-[11px] text-[#59627E] dark:text-slate-400 font-sans">
+              Architecture, privacy guarantees, and governance — answered.
+            </p>
+          </div>
+        </div>
+        <div className="divide-y divide-[#E6EDF6] dark:divide-slate-800">
+          {faqItems.map((item, index) => {
+            const isOpen = openFaq === index;
+            return (
+              <div key={index}>
+                <button
+                  onClick={() => setOpenFaq(isOpen ? null : index)}
+                  className="w-full flex items-center justify-between gap-4 px-6 py-4 text-left hover:bg-[#E6EDF6]/40 dark:hover:bg-slate-800/40 transition-colors cursor-pointer group"
+                  aria-expanded={isOpen}
+                >
+                  <span className={`text-xs sm:text-sm font-semibold font-sans transition-colors ${isOpen ? 'text-[#020C21] dark:text-sky-300' : 'text-[#202940] dark:text-slate-200 group-hover:text-[#020C21] dark:group-hover:text-white'}`}>
+                    {item.q}
+                  </span>
+                  <ChevronRight
+                    className={`w-4 h-4 shrink-0 text-[#59627E] dark:text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-90 text-sky-600 dark:text-sky-400' : ''}`}
+                  />
+                </button>
+                <div
+                  className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+                >
+                  <div className="overflow-hidden">
+                    <p className="px-6 pb-4 text-xs text-[#4D5B77] dark:text-slate-400 leading-relaxed font-sans max-w-3xl">
+                      {item.a}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

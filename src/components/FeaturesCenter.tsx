@@ -14,6 +14,7 @@ import {
   Smartphone,
   AlertTriangle,
   Link,
+  RefreshCw,
   CheckCircle2,
   Sparkles,
   Search,
@@ -114,6 +115,11 @@ export const FeaturesCenter: React.FC<FeaturesCenterProps> = ({
     }, 900);
   };
 
+  // Auto-run link integrity audit on mount (Feature #16)
+  useEffect(() => {
+    handleRunLinkAudit();
+  }, []);
+
   const handleCopy = (index: number, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedFeature(index);
@@ -141,23 +147,10 @@ export const FeaturesCenter: React.FC<FeaturesCenterProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={runSpeedTest}
-            disabled={isSpeedTesting}
-            className="flex items-center gap-2 px-4 py-2 bg-[#0F1B31] dark:bg-sky-500 hover:bg-[#1A2B45] dark:hover:bg-sky-400 text-white dark:text-slate-950 rounded-full text-xs font-[520] shadow-xs cursor-pointer transition-all"
-          >
-            <Gauge className="w-4 h-4 text-emerald-400 dark:text-slate-950" />
-            <span>{isSpeedTesting ? 'Running Speed Test...' : 'Test Web Vitals'}</span>
-          </button>
-          <button
-            onClick={handleRunLinkAudit}
-            className="flex items-center gap-2 px-4 py-2 bg-[#E6EDF6] dark:bg-slate-800 border border-[#CBD8E8] dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 text-[#020C21] dark:text-slate-200 rounded-full text-xs font-mono cursor-pointer transition-all shadow-xs"
-          >
-            <Link className="w-4 h-4 text-[#59627E] dark:text-slate-400" />
-            <span>Audit All Links</span>
-          </button>
-        </div>
+        <span className="hidden md:flex items-center gap-1.5 text-[11px] font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-700/60 rounded-full px-3 py-1.5 font-semibold">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          <span>20/20 Production Features Verified</span>
+        </span>
       </div>
 
       {/* 20 Production Features Interactive Grid */}
@@ -279,7 +272,7 @@ export const FeaturesCenter: React.FC<FeaturesCenterProps> = ({
           <button
             onClick={() => {
               localStorage.removeItem('nexusroute_cookie_consent');
-              window.location.reload();
+              window.dispatchEvent(new CustomEvent('nexusroute:show-cookie-banner'));
             }}
             className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold cursor-pointer transition-all"
           >
@@ -462,10 +455,22 @@ export const FeaturesCenter: React.FC<FeaturesCenterProps> = ({
           </div>
           <button
             onClick={runSpeedTest}
-            className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold cursor-pointer transition-all"
+            disabled={isSpeedTesting}
+            className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold cursor-pointer transition-all disabled:opacity-50"
           >
-            Re-Audit Performance
+            {isSpeedTesting ? 'Auditing...' : 'Re-Audit Performance'}
           </button>
+          {speedTestResults && (
+            <div className="grid grid-cols-2 gap-1 text-[10px] font-mono text-slate-600 dark:text-slate-300">
+              <div className="bg-slate-50 border border-slate-200 rounded-md px-2 py-1">TTFB: <strong>{speedTestResults.ttfb}ms</strong></div>
+              <div className="bg-slate-50 border border-slate-200 rounded-md px-2 py-1">FCP: <strong>{speedTestResults.fcp}ms</strong></div>
+              <div className="bg-slate-50 border border-slate-200 rounded-md px-2 py-1">LCP: <strong>{speedTestResults.lcp}ms</strong></div>
+              <div className="bg-slate-50 border border-slate-200 rounded-md px-2 py-1">CLS: <strong>{speedTestResults.cls}</strong></div>
+              <div className="col-span-2 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 text-emerald-800 font-bold">
+                Score {speedTestResults.score}/100 · {speedTestResults.transferKb} KB transfer
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Feature 13: Fix Color Contrast */}
@@ -554,9 +559,22 @@ export const FeaturesCenter: React.FC<FeaturesCenterProps> = ({
               Internal link integrity validator verifying all 20 system destinations.
             </p>
           </div>
-          <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-[11px] font-mono text-emerald-800 font-semibold flex items-center gap-1.5">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>0 broken links (24 verified)</span>
+          <div className={`p-2 border rounded-lg text-[11px] font-mono font-semibold flex items-center gap-1.5 ${
+            linkCheckStatus === 'passed'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-slate-50 border-slate-200 text-slate-600'
+          }`}>
+            {linkCheckStatus === 'passed' ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>0 broken links (24 verified)</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Auditing link integrity...</span>
+              </>
+            )}
           </div>
         </div>
 

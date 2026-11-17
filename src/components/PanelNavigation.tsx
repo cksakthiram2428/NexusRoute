@@ -81,10 +81,10 @@ export const TAB_ORDER: TabMeta[] = [
   },
   {
     id: 'analytics',
-    label: 'Savings Analytics & Audit Ledger',
-    shortLabel: 'Analytics',
+    label: 'Transparency & Governance Ledger',
+    shortLabel: 'Audit & Rules',
     stepNumber: 6,
-    description: 'Historical cost trajectories, P95 latency distributions, and trace inspection',
+    description: 'Live audit traces, per-request overrides, governance rules engine, and savings trajectories',
     nextSuggestionTitle: 'Consult the LPU Architecture Copilot',
     nextSuggestionDesc: 'Ask questions on prompt decomposition, complexity formulas, and FinOps rules.',
     icon: BarChart3,

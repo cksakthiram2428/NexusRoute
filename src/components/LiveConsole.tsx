@@ -345,14 +345,10 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({
         </div>
 
         <div className="flex items-center gap-3 shrink-0 flex-wrap">
-          <button
-            onClick={probeFleetHealth}
-            disabled={isProbingHealth}
-            className="flex items-center gap-2 px-4 py-2 rounded-full bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-[#020C21] dark:text-slate-200 text-xs font-[520] border border-[#CBD8E8] dark:border-slate-700 shadow-xs cursor-pointer transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isProbingHealth ? 'animate-spin' : ''}`} />
-            <span>{isProbingHealth ? 'Probing...' : 'Probe Fleet Health'}</span>
-          </button>
+          <span className="hidden sm:flex items-center gap-1.5 text-[11px] font-mono text-[#59627E] dark:text-slate-400">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Fleet Telemetry Live</span>
+          </span>
           <button
             onClick={() => onNavigate && onNavigate('decomposer')}
             className="flex items-center gap-2 px-4 py-2 rounded-full bg-[#0F1B31] dark:bg-sky-500 hover:bg-[#1A2B45] dark:hover:bg-sky-400 text-white dark:text-slate-950 text-xs font-[520] shadow-xs cursor-pointer transition-all"
@@ -604,6 +600,25 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Skeleton loader while routing executes */}
+          {isExecuting && (
+            <div className="bg-white/80 dark:bg-slate-900/80 border border-[#CBD8E8] dark:border-slate-800 rounded-3xl p-6 space-y-4 shadow-xs backdrop-blur-xl">
+              <div className="flex items-center justify-between">
+                <div className="h-3 w-48 rounded-full bg-[#CBD8E8]/60 dark:bg-slate-700/50 animate-pulse" />
+                <div className="h-4 w-20 rounded-full bg-[#CBD8E8]/60 dark:bg-slate-700/50 animate-pulse" />
+              </div>
+              <div className="h-3 w-full rounded-full bg-[#CBD8E8]/60 dark:bg-slate-700/50 animate-pulse" />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="h-16 rounded-xl bg-[#CBD8E8]/40 dark:bg-slate-700/40 animate-pulse" />
+                ))}
+              </div>
+              <p className="text-[10px] text-[#59627E] dark:text-slate-400 font-mono animate-pulse">
+                Profiling complexity signals and evaluating governance rules…
+              </p>
+            </div>
+          )}
 
           {/* Explainable Routing & 3D Complexity Vector Card */}
           {analysis && (

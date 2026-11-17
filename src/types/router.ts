@@ -83,6 +83,7 @@ export interface RoutingAnalysis {
   recommendedModelId: string;
   recommendedModelTier: ModelTier;
   routingPolicyMatched: string;
+  classifier?: string;
   routingRationale: string;
   confidenceScore: number; // 0 - 1
   estimatedInputTokens: number;
@@ -100,6 +101,9 @@ export interface ExecutionTrace {
   selectedModelId: string;
   isOverridden: boolean;
   overrideModelId?: string;
+  sourcePipeline?: TraceSourcePipeline;
+  appliedRuleIds?: string[];
+  overrideHistory?: TraceOverride[];
   subTaskResults?: {
     subTaskId: string;
     modelId: string;
@@ -251,4 +255,74 @@ export interface SystemMetrics {
     cloud_flagship: number;
   };
   recentTraces: ExecutionTrace[];
+}
+
+// ============================================================================
+// Governance: Routing Rules Engine & Per-Request Overrides
+// ============================================================================
+
+export type TraceSourcePipeline =
+  | 'heuristic'
+  | 'onnx-neural'
+  | 'rule-engine'
+  | 'manual-override';
+
+export type RoutingDecisionType =
+  | 'force_local'
+  | 'force_cloud_lite'
+  | 'force_cloud_standard'
+  | 'force_flagship'
+  | 'block_prompt'
+  | 'boost_signal';
+
+export type RuleConditionField =
+  | 'prompt_contains'
+  | 'category'
+  | 'complexity'
+  | 'token_count'
+  | 'model_tier';
+
+export type RuleConditionOperator = 'equals' | 'contains' | 'gte' | 'lte' | 'gt' | 'lt';
+
+export interface RuleCondition {
+  field: RuleConditionField;
+  operator: RuleConditionOperator;
+  value: string | number;
+}
+
+export interface RuleAction {
+  type: RoutingDecisionType;
+  targetModelId?: string;
+  signalName?: string;
+  signalWeight?: number;
+  reason: string;
+}
+
+export interface RoutingRule {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  priority: number; // lower number evaluates first
+  conditions: RuleCondition[];
+  actions: RuleAction[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface TraceOverride {
+  traceId: string;
+  previousModelId: string;
+  overriddenModelId: string;
+  reason: string;
+  overriddenBy: string;
+  overriddenAt: string;
+}
+
+export interface RuleEvaluationResult {
+  analysis: RoutingAnalysis;
+  blocked: boolean;
+  blockReason?: string;
+  appliedRuleIds: string[];
 }
